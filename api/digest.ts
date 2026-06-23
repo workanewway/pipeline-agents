@@ -9,6 +9,8 @@ import type { VercelRequest, VercelResponse } from "@vercel/node";
 import Anthropic from "@anthropic-ai/sdk";
 import { getSheets, readQueue, QueueRow, SHEET_ID, SHEET_GID, DEFAULT_MODEL, cronAuthorized } from "../lib/pipeline-common.js";
 
+export const maxDuration = 60;
+
 const MODEL = DEFAULT_MODEL;
 const SOURCE_STAGE = process.env.SOURCE_STAGE || "In Review";
 
@@ -44,14 +46,18 @@ function renderItem(it: QueueRow): string {
     const v = it.get(key);
     return v ? `<p style="margin:6px 0"><strong>${label}:</strong> ${esc(v)}</p>` : "";
   };
+  const source = it.get("Source");
+  const priority = it.get("Priority Score");
+  const tag = [source, priority ? `priority ${priority}` : ""].filter(Boolean).join(" · ");
   return `<div style="border:1px solid #E2E8F0;border-radius:10px;padding:16px;margin:12px 0">
     <div style="display:flex;justify-content:space-between;align-items:baseline">
       <h3 style="margin:0;color:#1A202C;font-size:16px">${esc(it.get("Title"))}</h3>
-      <span style="color:#718096;font-size:13px">priority ${esc(it.get("Priority Score"))}</span>
+      <span style="color:#718096;font-size:13px;white-space:nowrap;padding-left:12px">${esc(tag)}</span>
     </div>
     ${field("AI-Native Approach", "AI-Native Approach")}
     ${field("Reasoning", "Reasoning")}
     ${field("Open Questions", "Open Questions")}
+    ${field("Where it came from", "Evidence / Sources")}
     ${field("Build Sequence", "Build Sequence")}
     <p style="margin:12px 0 0"><a href="${rowLink(it.rowNum)}"
        style="background:#3182CE;color:#fff;text-decoration:none;padding:8px 14px;border-radius:6px;font-size:14px">Review this idea →</a></p>
