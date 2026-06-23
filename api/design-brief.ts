@@ -65,7 +65,7 @@ Open Questions: ${row.get("Open Questions")}`;
 
   const resp = await anthropic.messages.create({
     model: MODEL,
-    max_tokens: 3000,
+    max_tokens: 8000,
     system,
     messages: [{ role: "user", content: user }],
   });
@@ -78,7 +78,8 @@ Open Questions: ${row.get("Open Questions")}`;
     .trim();
 
   try {
-    const parsed = JSON.parse(text);
+    const json = text.slice(text.indexOf("{"), text.lastIndexOf("}") + 1);
+    const parsed = JSON.parse(json);
     if (parsed.designBrief && parsed.buildSequence) return parsed as Brief;
     return null;
   } catch {
