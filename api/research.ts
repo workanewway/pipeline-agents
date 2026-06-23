@@ -10,6 +10,7 @@ import {
   PROJECTS, AI_NATIVE_DIRECTIVE, Project, cronAuthorized,
   getSheets, readQueue, newRow, setCell, SHEET_ID, TAB, DEFAULT_MODEL,
 } from "../lib/pipeline-common.js";
+export const maxDuration = 60;
 
 const MODEL = DEFAULT_MODEL;
 const MAX_IDEAS_PER_PROJECT = 3;
