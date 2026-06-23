@@ -1,0 +1,16 @@
+{
+  "name": "pipeline-agents",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": "22.x" },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.105.0",
+    "googleapis": "^173.0.0"
+  },
+  "devDependencies": {
+    "@vercel/node": "^5.8.19",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0"
+  }
+}
