@@ -10,10 +10,10 @@ import {
   projectByName, AI_NATIVE_DIRECTIVE, Project, cronAuthorized,
   getSheets, readQueue, updateCells, QueueRow, DEFAULT_MODEL,
 } from "../lib/pipeline-common.js";
-export const maxDuration = 60;
+export const maxDuration = 300;
 
 const MODEL = DEFAULT_MODEL;        // "claude-opus-4-8" is worth it here - the brief shapes the build
-const MAX_NEW_PER_RUN = 2;
+const MAX_NEW_PER_RUN = 1;
 const PRIORITY_THRESHOLD = 60;
 
 const anthropic = new Anthropic();
