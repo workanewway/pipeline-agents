@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Resolve · Pipeline</title>
+<style>
+  /* Operator's tool, not a marketing page. Calm graphite ground, a single
+     signal color for "your turn / decisions", monospace for the spec (it's
+     machine instructions) and a humanist sans for the conversation (it's talk).
+     The signature is the split: SPEC (the artifact) | CONVERSATION (the judgment). */
+  :root{
+    --bg:#15171c; --panel:#1c1f26; --panel-2:#21252e; --line:#2b303b;
+    --ink:#e7e9ee; --ink-dim:#9aa3b2; --ink-faint:#6b7384;
+    --signal:#ED8936;            /* NewWay accent — used only for "your move" */
+    --you:#2a3340; --them:#22262f;
+    --ok:#48BB78; --warn:#f0b429;
+    --mono:'SF Mono',ui-monospace,'Cascadia Code',Menlo,monospace;
+    --sans:'Inter',-apple-system,system-ui,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);font-family:var(--sans);
+    -webkit-font-smoothing:antialiased}
+  body{display:flex;flex-direction:column;height:100vh;overflow:hidden}
+
+  /* top bar */
+  header{display:flex;align-items:center;gap:14px;padding:12px 20px;border-bottom:1px solid var(--line);
+    background:var(--panel);flex:none}
+  .id{font-family:var(--mono);font-size:12px;color:var(--signal);letter-spacing:.04em}
+  header h1{font-size:15px;font-weight:600;margin:0;flex:1;min-width:0;white-space:nowrap;
+    overflow:hidden;text-overflow:ellipsis}
+  .chip{font-size:11px;color:var(--ink-dim);border:1px solid var(--line);border-radius:999px;
+    padding:3px 9px;white-space:nowrap}
+  .chip.stage{color:var(--ink);border-color:var(--signal)}
+
+  /* split */
+  main{flex:1;display:grid;grid-template-columns:1fr 1fr;min-height:0}
+  .col{min-height:0;display:flex;flex-direction:column;overflow:hidden}
+  .col.spec{border-right:1px solid var(--line)}
+  .col-head{padding:10px 18px;font-size:11px;letter-spacing:.12em;text-transform:uppercase;
+    color:var(--ink-faint);border-bottom:1px solid var(--line);flex:none;display:flex;
+    align-items:center;justify-content:space-between}
+  .col-body{overflow-y:auto;padding:18px;flex:1}
+
+  /* spec side */
+  .block{margin-bottom:22px}
+  .block h2{font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-faint);
+    margin:0 0 8px}
+  .prose{font-size:13.5px;line-height:1.55;color:var(--ink-dim);white-space:pre-wrap}
+  .seq{font-family:var(--mono);font-size:12.5px;line-height:1.6;color:var(--ink);white-space:pre-wrap;
+    background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px}
+  .seq.changed{border-color:var(--signal);box-shadow:0 0 0 1px var(--signal) inset}
+  .oq{background:var(--panel-2);border-left:2px solid var(--signal);border-radius:0 8px 8px 0;
+    padding:12px 14px;font-size:13.5px;line-height:1.55;color:var(--ink);white-space:pre-wrap}
+
+  /* chat side */
+  .thread{flex:1;overflow-y:auto;padding:18px;display:flex;flex-direction:column;gap:14px}
+  .msg{max-width:88%;font-size:13.5px;line-height:1.55;padding:11px 14px;border-radius:12px;
+    white-space:pre-wrap;word-wrap:break-word}
+  .msg.you{align-self:flex-end;background:var(--you);border-bottom-right-radius:4px}
+  .msg.them{align-self:flex-start;background:var(--them);border-bottom-left-radius:4px;color:var(--ink-dim)}
+  .msg.sys{align-self:center;font-size:11.5px;color:var(--ink-faint);background:none;padding:2px}
+  .typing{align-self:flex-start;color:var(--ink-faint);font-size:12px;padding:4px 14px}
+
+  .composer{flex:none;border-top:1px solid var(--line);padding:12px;background:var(--panel);
+    display:flex;gap:10px;align-items:flex-end}
+  textarea{flex:1;resize:none;background:var(--panel-2);border:1px solid var(--line);border-radius:10px;
+    color:var(--ink);font-family:var(--sans);font-size:13.5px;line-height:1.5;padding:10px 12px;
+    max-height:140px;outline:none}
+  textarea:focus{border-color:var(--ink-faint)}
+  button{font-family:var(--sans);font-size:13px;font-weight:600;border:none;border-radius:9px;
+    padding:10px 14px;cursor:pointer;white-space:nowrap}
+  .send{background:var(--signal);color:#1a1205}
+  .send:disabled{opacity:.4;cursor:default}
+  .actions{flex:none;border-top:1px solid var(--line);padding:12px 18px;background:var(--panel);
+    display:flex;gap:10px;align-items:center}
+  .ghost{background:none;border:1px solid var(--line);color:var(--ink-dim)}
+  .ghost:hover{border-color:var(--ink-faint);color:var(--ink)}
+  .primary{background:var(--ok);color:#04210f}
+  .primary:disabled{opacity:.4;cursor:default}
+  .hint{font-size:11.5px;color:var(--ink-faint);flex:1}
+  .err{color:#fca5a5;font-size:12px;padding:0 18px 10px}
+
+  @media(max-width:860px){ main{grid-template-columns:1fr;grid-template-rows:1fr 1fr}
+    .col.spec{border-right:none;border-bottom:1px solid var(--line)} }
+</style>
+</head>
+<body>
+  <header>
+    <span class="id" id="ideaId">—</span>
+    <h1 id="title">Loading…</h1>
+    <span class="chip" id="product"></span>
+    <span class="chip stage" id="stage"></span>
+  </header>
+
+  <main>
+    <!-- SPEC: the artifact being shaped -->
+    <section class="col spec">
+      <div class="col-head"><span>The spec</span><span id="specNote"></span></div>
+      <div class="col-body">
+        <div class="block"><h2>Open questions to resolve</h2><div class="oq" id="openQ">—</div></div>
+        <div class="block"><h2>Design brief</h2><div class="prose" id="brief">—</div></div>
+        <div class="block"><h2>Build sequence</h2><div class="seq" id="seq">—</div></div>
+      </div>
+    </section>
+
+    <!-- CONVERSATION: where the judgment happens -->
+    <section class="col chat">
+      <div class="col-head"><span>Work it through</span><span id="chatNote"></span></div>
+      <div class="thread" id="thread"></div>
+      <div class="err" id="err" style="display:none"></div>
+      <div class="composer">
+        <textarea id="input" rows="1" placeholder="Answer a question, push back, decide…"></textarea>
+        <button class="send" id="send">Send</button>
+      </div>
+      <div class="actions">
+        <span class="hint" id="hint">Talk the open questions through, then rewrite the spec.</span>
+        <button class="ghost" id="rewrite">Rewrite spec from chat</button>
+        <button class="primary" id="save" disabled>Save resolved spec</button>
+      </div>
+    </section>
+  </main>
+
+<script>
+const qs = new URLSearchParams(location.search);
+const ID = qs.get('id');
+let idea = null;
+let messages = [];          // {role, content}
+let pendingSeq = null;      // proposed rewrite, awaiting save
+
+const $ = id => document.getElementById(id);
+const esc = s => (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;');
+
+function addMsg(role, text, cls){
+  const d = document.createElement('div');
+  d.className = 'msg ' + (cls || (role==='user'?'you':'them'));
+  d.textContent = text;
+  $('thread').appendChild(d);
+  $('thread').scrollTop = $('thread').scrollHeight;
+  return d;
+}
+
+async function load(){
+  if(!ID){ $('title').textContent = 'No idea id in URL (?id=IDEA-0007)'; return; }
+  try{
+    const r = await fetch('/api/idea?id=' + encodeURIComponent(ID));
+    const j = await r.json();
+    if(!j.ok) throw new Error(j.error||'load failed');
+    idea = j.idea;
+    $('ideaId').textContent = idea.ideaId;
+    $('title').textContent = idea.title;
+    $('product').textContent = idea.product;
+    $('stage').textContent = idea.stage;
+    $('openQ').textContent = idea.openQuestions || '(none recorded)';
+    $('brief').textContent = idea.designBrief || '(no brief yet — run design-brief first)';
+    $('seq').textContent = idea.buildSequence || '(no build sequence yet)';
+    addMsg('assistant',
+      "Here's the spec. Let's settle the open questions before this builds. Ask me to think any of them through, push back on the brief, or tell me your call — then hit \"Rewrite spec from chat\" when we're done.",
+      'them');
+  }catch(e){ showErr(e.message); }
+}
+
+function showErr(m){ const e=$('err'); e.style.display='block'; e.textContent=m; }
+function clearErr(){ $('err').style.display='none'; }
+
+async function send(){
+  const text = $('input').value.trim();
+  if(!text || !idea) return;
+  clearErr();
+  $('input').value=''; $('input').style.height='auto';
+  addMsg('user', text);
+  messages.push({role:'user', content:text});
+  $('send').disabled = true;
+  const typing = addMsg('assistant','thinking…','typing');
+  try{
+    const r = await fetch('/api/design-chat',{method:'POST',headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({mode:'chat', idea, messages})});
+    const j = await r.json();
+    typing.remove();
+    if(!j.ok) throw new Error(j.error||'chat failed');
+    addMsg('assistant', j.text);
+    messages.push({role:'assistant', content:j.text});
+  }catch(e){ typing.remove(); showErr(e.message); }
+  $('send').disabled = false;
+  $('input').focus();
+}
+
+async function rewrite(){
+  if(!idea || messages.length===0){ showErr('Talk through the questions first — nothing to rewrite from.'); return; }
+  clearErr();
+  $('rewrite').disabled = true;
+  const note = addMsg('assistant','rewriting the build sequence…','typing');
+  try{
+    const r = await fetch('/api/design-chat',{method:'POST',headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({mode:'rewrite', idea, messages})});
+    const j = await r.json();
+    note.remove();
+    if(!j.ok) throw new Error(j.error||'rewrite failed');
+    pendingSeq = j.text;
+    $('seq').textContent = j.text;
+    $('seq').classList.add('changed');
+    $('specNote').textContent = 'proposed — not saved';
+    $('save').disabled = false;
+    addMsg('assistant','I rewrote the build sequence (left, highlighted) to fold in what we decided. Read it — if it’s right, Save resolved spec. If not, keep talking and rewrite again.','sys');
+  }catch(e){ note.remove(); showErr(e.message); }
+  $('rewrite').disabled = false;
+}
+
+async function save(){
+  if(pendingSeq===null){ showErr('Nothing to save yet — rewrite the spec first.'); return; }
+  clearErr(); $('save').disabled = true;
+  try{
+    const r = await fetch('/api/idea',{method:'POST',headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({id: idea.ideaId, buildSequence: pendingSeq})});
+    const j = await r.json();
+    if(!j.ok) throw new Error(j.error||'save failed');
+    idea.buildSequence = pendingSeq; pendingSeq = null;
+    $('seq').classList.remove('changed');
+    $('specNote').textContent = 'saved ✓';
+    addMsg('assistant','Saved to the queue. The build sequence is updated; the idea stays In Review. Approve it (in the sheet or the board) when you’re ready for the build to fire — that’s the separate gate.','sys');
+  }catch(e){ showErr(e.message); $('save').disabled=false; }
+}
+
+$('send').onclick = send;
+$('rewrite').onclick = rewrite;
+$('save').onclick = save;
+$('input').addEventListener('keydown', e=>{ if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); send(); }});
+$('input').addEventListener('input', e=>{ e.target.style.height='auto'; e.target.style.height=Math.min(e.target.scrollHeight,140)+'px'; });
+load();
+</script>
+</body>
+</html>
