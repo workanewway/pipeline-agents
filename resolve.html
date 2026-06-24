@@ -110,11 +110,11 @@
       <div class="thread" id="thread"></div>
       <div class="err" id="err" style="display:none"></div>
       <div class="composer">
-        <textarea id="input" rows="1" placeholder="Answer a question, push back, decide…"></textarea>
+        <textarea id="input" rows="1" placeholder="Answer, push back, decide… or type “rewrite the spec”"></textarea>
         <button class="send" id="send">Send</button>
       </div>
       <div class="actions">
-        <span class="hint" id="hint">Talk the open questions through, then rewrite the spec.</span>
+        <span class="hint" id="hint">Talk it through, then say “rewrite the spec” (or use the button).</span>
         <button class="ghost" id="rewrite">Rewrite spec from chat</button>
         <button class="primary" id="save" disabled>Save resolved spec</button>
       </div>
@@ -166,6 +166,18 @@ function clearErr(){ $('err').style.display='none'; }
 async function send(){
   const text = $('input').value.trim();
   if(!text || !idea) return;
+
+  // If the message is an explicit rewrite command, route to the rewrite path
+  // (same deliberate action as the button) rather than a normal chat turn.
+  // Conservative on purpose: only clear imperatives fire it, so musing about
+  // rewriting won't regenerate the spec.
+  if(isRewriteCommand(text)){
+    $('input').value=''; $('input').style.height='auto';
+    addMsg('user', text);
+    await rewrite();
+    return;
+  }
+
   clearErr();
   $('input').value=''; $('input').style.height='auto';
   addMsg('user', text);
@@ -183,6 +195,18 @@ async function send(){
   }catch(e){ typing.remove(); showErr(e.message); }
   $('send').disabled = false;
   $('input').focus();
+}
+
+function isRewriteCommand(text){
+  const t = text.toLowerCase().trim().replace(/[.!]+$/,'');
+  const patterns = [
+    /^rewrite( the)?( spec| build sequence| it)?( now)?$/,
+    /^(go ahead and |please |okay,? )?rewrite (the )?(spec|build sequence|it)\b/,
+    /^update (the )?build sequence\b/,
+    /^(re)?generate (the )?(spec|build sequence)\b/,
+    /^apply (the |our )?(decisions|changes) (to )?(the )?(spec|build sequence)\b/,
+  ];
+  return patterns.some(p => p.test(t));
 }
 
 async function rewrite(){
