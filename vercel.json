@@ -3,6 +3,7 @@
   "crons": [
     { "path": "/api/research",     "schedule": "0 13 * * *" },
     { "path": "/api/design-brief", "schedule": "30 13 * * *" },
+    { "path": "/api/watcher",      "schedule": "45 13 * * *" },
     { "path": "/api/digest",       "schedule": "0 14 * * *" }
   ],
   "functions": {
