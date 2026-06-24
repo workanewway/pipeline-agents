@@ -74,11 +74,26 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const { mode, idea, messages } = body;
     if (!idea || !messages) return res.status(400).json({ error: "missing idea or messages" });
 
+    // The Anthropic API requires the messages array to END with a user turn.
+    // In "chat" mode the user just spoke, so that's fine. In "rewrite" mode the
+    // last visible message is usually the assistant's, so append an explicit
+    // user instruction to trigger the rewrite — otherwise the call 400s with
+    // "model does not support assistant message prefill".
+    const outgoing = messages.map((m) => ({ role: m.role, content: m.content }));
+    if (mode === "rewrite" || outgoing[outgoing.length - 1]?.role !== "user") {
+      outgoing.push({
+        role: "user",
+        content:
+          "Now rewrite the build sequence to incorporate every decision we reached above. " +
+          "Output ONLY the new build sequence text — no preamble, no fences, no commentary.",
+      });
+    }
+
     const resp = await anthropic.messages.create({
       model: DEFAULT_MODEL,
       max_tokens: mode === "rewrite" ? 4000 : 1200,
       system: systemFor(idea, mode),
-      messages: messages.map((m) => ({ role: m.role, content: m.content })),
+      messages: outgoing,
     });
 
     const text = resp.content
