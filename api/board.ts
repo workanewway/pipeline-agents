@@ -24,6 +24,7 @@ const FIELD_MAP: Record<string, string> = {
   priority_rationale: 'priorityRationale',
   reasoning: 'reasoning',
   open_questions: 'openQuestions',
+  build_sequence: 'buildSequence',
   review: 'review',
   review_feedback: 'reviewFeedback',
   revisions: 'revisions',
@@ -83,7 +84,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         if (field === 'id' && val) hasId = true;
       }
       // Skip fully blank rows; an idea must at least have an ID.
-      if (hasId) ideas.push(obj);
+      if (hasId) {
+        // Report only whether a Build Sequence exists — don't ship the full text.
+        obj.hasBuildSequence = obj.buildSequence ? '1' : '';
+        delete obj.buildSequence;
+        ideas.push(obj);
+      }
     }
 
     res.status(200).json({ ok: true, ideas, updatedAt: new Date().toISOString() });
