@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Pipeline Board</title>
+<title>Pipeline Board — Broker Platform</title>
 <style>
   :root {
     --bg: #f5f7fa;
@@ -30,69 +30,46 @@
   * { box-sizing: border-box; }
   html, body { height: 100%; }
   body {
-    margin: 0;
-    font-family: var(--sans);
-    color: var(--ink);
-    background: var(--bg);
-    -webkit-font-smoothing: antialiased;
-    display: flex;
-    flex-direction: column;
+    margin: 0; font-family: var(--sans); color: var(--ink); background: var(--bg);
+    -webkit-font-smoothing: antialiased; display: flex; flex-direction: column;
   }
 
   /* ── Top bar ───────────────────────────────────────────── */
   header.bar {
-    display: flex;
-    align-items: center;
-    gap: 18px;
-    padding: 12px 20px;
-    background: #fff;
-    border-bottom: 1px solid var(--line);
-    flex-wrap: wrap;
-    position: sticky;
-    top: 0;
-    z-index: 20;
+    display: flex; align-items: center; gap: 18px; padding: 12px 20px;
+    background: #fff; border-bottom: 1px solid var(--line); flex-wrap: wrap;
+    position: sticky; top: 0; z-index: 20;
   }
-  .brand { display: flex; align-items: baseline; gap: 10px; }
+  .brand { display: flex; align-items: center; gap: 10px; }
   .brand .dot {
-    width: 9px; height: 9px; border-radius: 50%;
-    background: var(--green); align-self: center;
+    width: 9px; height: 9px; border-radius: 50%; background: var(--green);
     box-shadow: 0 0 0 3px rgba(72,187,120,.18);
   }
-  .brand h1 {
-    font-size: 16px; font-weight: 650; letter-spacing: -.01em; margin: 0;
+  .brand h1 { font-size: 16px; font-weight: 650; letter-spacing: -.01em; margin: 0; }
+  .brand .scope {
+    font-size: 11px; font-weight: 600; letter-spacing: .02em;
+    color: var(--nwd); background: #e7eef6; border-radius: 20px; padding: 3px 9px;
   }
   .brand .sub { font-family: var(--mono); font-size: 11px; color: var(--ink-faint); }
 
   .controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-left: auto; }
-  .controls input[type="search"],
-  .controls select {
-    font-family: var(--sans);
-    font-size: 13px;
-    color: var(--ink);
-    background: #fff;
-    border: 1px solid var(--line);
-    border-radius: 8px;
-    padding: 6px 10px;
-    height: 32px;
+  .controls input[type="search"], .controls select {
+    font-family: var(--sans); font-size: 13px; color: var(--ink); background: #fff;
+    border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; height: 32px;
   }
   .controls input[type="search"] { width: 180px; }
   .controls select { cursor: pointer; }
-  .controls input:focus-visible,
-  .controls select:focus-visible,
-  button:focus-visible,
-  .card:focus-visible {
-    outline: 2px solid var(--action);
-    outline-offset: 2px;
+  .controls input:focus-visible, .controls select:focus-visible,
+  button:focus-visible, .card:focus-visible {
+    outline: 2px solid var(--action); outline-offset: 2px;
   }
   .toggle {
-    display: inline-flex; align-items: center; gap: 6px;
-    font-size: 12px; color: var(--ink-soft); cursor: pointer; user-select: none;
-    padding: 4px 6px; border-radius: 6px;
+    display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-soft);
+    cursor: pointer; user-select: none; padding: 4px 6px; border-radius: 6px;
   }
   .toggle input { accent-color: var(--action); }
   button.refresh {
-    font-family: var(--sans); font-size: 13px; font-weight: 550;
-    color: #fff; background: var(--nwd);
+    font-family: var(--sans); font-size: 13px; font-weight: 550; color: #fff; background: var(--nwd);
     border: 0; border-radius: 8px; height: 32px; padding: 0 14px; cursor: pointer;
   }
   button.refresh:hover { background: #284f7e; }
@@ -102,33 +79,23 @@
   /* ── Board ─────────────────────────────────────────────── */
   .scroll { flex: 1; overflow: auto; padding: 0 14px 18px; }
   .phase-row, .board { display: grid; grid-auto-flow: column; gap: 12px; }
-  .phase-row {
-    position: sticky; top: 0; z-index: 5;
-    padding: 12px 0 6px; background: var(--bg);
-  }
+  .phase-row { position: sticky; top: 0; z-index: 5; padding: 12px 0 6px; background: var(--bg); }
   .board { padding-bottom: 6px; align-items: start; grid-auto-columns: var(--col-w); }
 
   .phase {
     display: flex; align-items: center; gap: 8px;
     font-size: 11px; font-weight: 650; letter-spacing: .08em; text-transform: uppercase;
-    color: var(--ink-soft);
-    padding: 4px 2px;
-    border-top: 2px solid var(--phase-tint, var(--slate));
+    color: var(--ink-soft); padding: 4px 2px; border-top: 2px solid var(--phase-tint, var(--slate));
   }
   .phase .pcount { font-family: var(--mono); font-weight: 600; color: var(--ink-faint); letter-spacing: 0; }
 
   .col {
-    width: var(--col-w);
-    background: var(--panel);
-    border: 1px solid var(--line-soft);
-    border-radius: var(--radius);
-    display: flex; flex-direction: column;
-    max-height: 100%;
+    width: var(--col-w); background: var(--panel); border: 1px solid var(--line-soft);
+    border-radius: var(--radius); display: flex; flex-direction: column; max-height: 100%;
   }
   .col.empty { background: transparent; border-style: dashed; border-color: var(--line); }
   .col-head {
-    display: flex; align-items: center; gap: 8px;
-    padding: 9px 11px;
+    display: flex; align-items: center; gap: 8px; padding: 9px 11px;
     border-bottom: 1px solid var(--line-soft);
     position: sticky; top: 0; background: inherit; border-radius: var(--radius) var(--radius) 0 0;
   }
@@ -145,24 +112,16 @@
 
   /* ── Card ──────────────────────────────────────────────── */
   .card {
-    display: block; text-align: left; width: 100%;
-    background: var(--card);
-    border: 1px solid var(--line);
-    border-left: 3px solid var(--spine, var(--slate));
-    border-radius: 8px;
-    padding: 9px 10px 10px;
-    cursor: pointer;
-    box-shadow: var(--shadow);
+    display: block; text-align: left; width: 100%; background: var(--card);
+    border: 1px solid var(--line); border-left: 3px solid var(--spine, var(--slate));
+    border-radius: 8px; padding: 9px 10px 10px; cursor: pointer; box-shadow: var(--shadow);
     font-family: var(--sans);
     transition: border-color .12s ease, transform .12s ease, box-shadow .12s ease;
   }
   .card:hover { border-color: var(--action); border-left-color: var(--spine, var(--slate)); transform: translateY(-1px); box-shadow: 0 4px 10px rgba(20,33,51,.10); }
   .card-top { display: flex; align-items: center; gap: 8px; margin-bottom: 5px; }
   .card-id { font-family: var(--mono); font-size: 10.5px; font-weight: 600; color: var(--ink-faint); letter-spacing: .02em; }
-  .pri {
-    margin-left: auto; font-family: var(--mono); font-size: 10.5px; font-weight: 600;
-    color: var(--ink-soft); display: inline-flex; align-items: center; gap: 5px;
-  }
+  .pri { margin-left: auto; font-family: var(--mono); font-size: 10.5px; font-weight: 600; color: var(--ink-soft); display: inline-flex; align-items: center; gap: 5px; }
   .pri .bar { width: 30px; height: 4px; border-radius: 3px; background: var(--line); overflow: hidden; }
   .pri .bar > i { display: block; height: 100%; background: var(--action); }
   .card-title { font-size: 13px; font-weight: 600; line-height: 1.3; color: var(--ink); margin: 0 0 5px; }
@@ -171,26 +130,26 @@
     display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
   }
   .badges { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
-  .badge {
-    font-size: 10px; font-weight: 600; letter-spacing: .01em;
-    padding: 2px 7px; border-radius: 20px; white-space: nowrap;
-  }
+  .badge { font-size: 10px; font-weight: 600; letter-spacing: .01em; padding: 2px 7px; border-radius: 20px; white-space: nowrap; }
   .badge.source { background: #eef2f8; color: var(--ink-soft); }
-  .badge.product { background: var(--prod-bg, #eef2f8); color: var(--prod-ink, var(--ink-soft)); }
-  .pill {
-    font-size: 10px; font-weight: 650; letter-spacing: .02em; text-transform: uppercase;
-    padding: 2px 8px; border-radius: 20px; white-space: nowrap;
-  }
+  .pill { font-size: 10px; font-weight: 650; letter-spacing: .02em; text-transform: uppercase; padding: 2px 8px; border-radius: 20px; white-space: nowrap; }
   .pill.approved { background: rgba(72,187,120,.15); color: #277a4b; }
   .pill.declined { background: rgba(229,62,62,.13); color: #b23030; }
   .pill.hold { background: #e9edf3; color: var(--slate); }
   .pill.revise { background: rgba(214,158,46,.16); color: #9a6f12; }
   .pill.pending { background: #fff; color: var(--action); border: 1px solid rgba(49,130,206,.4); }
-  .meta { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 7px; align-items: center; }
+
+  .card-foot { display: flex; align-items: center; gap: 8px; margin-top: 9px; padding-top: 8px; border-top: 1px solid var(--line-soft); }
+  .links { display: flex; gap: 8px; align-items: center; }
+  .links a { color: var(--action); text-decoration: none; font-family: var(--mono); font-size: 10px; }
+  .links a:hover { text-decoration: underline; }
   .chip { font-family: var(--mono); font-size: 10px; color: var(--ink-faint); display: inline-flex; align-items: center; gap: 3px; }
   .chip.warn { color: var(--amber); }
-  .chip a, .meta a { color: var(--action); text-decoration: none; font-family: var(--mono); font-size: 10px; }
-  .chip a:hover, .meta a:hover { text-decoration: underline; }
+  .decide {
+    margin-left: auto; font-family: var(--sans); font-size: 11px; font-weight: 600; color: var(--action);
+    background: #fff; border: 1px solid rgba(49,130,206,.45); border-radius: 7px; padding: 4px 9px; cursor: pointer;
+  }
+  .decide:hover { background: #f0f6fd; }
   .blocked-note { margin-top: 7px; font-size: 10.5px; color: #b23030; background: rgba(229,62,62,.07); border-radius: 6px; padding: 5px 7px; line-height: 1.35; }
 
   /* ── States ────────────────────────────────────────────── */
@@ -200,24 +159,74 @@
   .state.error h2 { color: var(--red); }
   .spinner { width: 22px; height: 22px; border: 2.5px solid var(--line); border-top-color: var(--action); border-radius: 50%; margin: 0 auto 14px; animation: spin .7s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
-  @media (prefers-reduced-motion: reduce) { .spinner { animation: none; } .card { transition: none; } }
 
-  @media (max-width: 640px) {
-    .controls input[type="search"] { width: 130px; }
-    .stamp { width: 100%; }
+  /* ── Decision modal ────────────────────────────────────── */
+  .overlay {
+    position: fixed; inset: 0; background: rgba(20,33,51,.42); z-index: 50;
+    display: flex; align-items: center; justify-content: center; padding: 20px;
   }
+  .modal {
+    width: 100%; max-width: 440px; background: #fff; border-radius: 14px;
+    box-shadow: 0 20px 50px rgba(20,33,51,.28); padding: 18px 20px 20px; font-family: var(--sans);
+  }
+  .modal-head { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; }
+  .modal-head .m-id { font-family: var(--mono); font-size: 11px; font-weight: 600; color: var(--ink-faint); }
+  .modal-head .m-close { margin-left: auto; border: 0; background: none; font-size: 22px; line-height: 1; color: var(--ink-faint); cursor: pointer; padding: 0 4px; }
+  .modal h3 { font-size: 15px; font-weight: 650; margin: 2px 0 4px; letter-spacing: -.01em; }
+  .modal .m-sub { font-size: 12.5px; color: var(--ink-soft); margin: 0 0 14px; line-height: 1.45; }
+  .opt-list { display: flex; flex-direction: column; gap: 7px; }
+  .opt {
+    text-align: left; font-family: var(--sans); font-size: 13px; font-weight: 550; color: var(--ink);
+    background: #fff; border: 1px solid var(--line); border-radius: 9px; padding: 10px 12px; cursor: pointer;
+    display: flex; align-items: center; gap: 9px;
+  }
+  .opt:hover { border-color: var(--action); background: #f7fafe; }
+  .opt .dotc { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+  .opt small { color: var(--ink-faint); font-weight: 500; margin-left: auto; }
+  .m-warn { font-size: 12px; line-height: 1.5; border-radius: 9px; padding: 10px 12px; margin: 0 0 12px; }
+  .m-warn.amber { background: rgba(214,158,46,.12); color: #835c0d; }
+  .m-warn.red { background: rgba(229,62,62,.1); color: #a52a2a; }
+  .m-warn.blue { background: rgba(49,130,206,.1); color: #245a8a; }
+  .m-warn strong { font-weight: 700; }
+  textarea.m-feedback {
+    width: 100%; min-height: 76px; resize: vertical; font-family: var(--sans); font-size: 13px;
+    color: var(--ink); border: 1px solid var(--line); border-radius: 9px; padding: 9px 11px; margin-bottom: 12px;
+  }
+  textarea.m-feedback:focus-visible { outline: 2px solid var(--action); outline-offset: 1px; }
+  .m-actions { display: flex; gap: 8px; justify-content: flex-end; }
+  .btn { font-family: var(--sans); font-size: 13px; font-weight: 600; border-radius: 9px; padding: 9px 16px; cursor: pointer; border: 1px solid var(--line); background: #fff; color: var(--ink-soft); }
+  .btn:hover { background: #f4f6fa; }
+  .btn.primary { border: 0; color: #fff; background: var(--nwd); }
+  .btn.primary:hover { background: #284f7e; }
+  .btn.primary.danger { background: var(--red); }
+  .btn.primary.danger:hover { background: #c53030; }
+  .btn.primary.go { background: var(--green); }
+  .btn.primary.go:hover { background: #38a169; }
+  .btn:disabled { opacity: .5; cursor: default; }
+  .m-err { font-size: 12px; color: var(--red); margin: 10px 0 0; min-height: 1px; }
+
+  .toast {
+    position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%);
+    background: var(--ink); color: #fff; font-size: 13px; font-weight: 550;
+    padding: 10px 16px; border-radius: 10px; box-shadow: 0 8px 24px rgba(20,33,51,.3);
+    z-index: 60; opacity: 0; transition: opacity .2s ease;
+  }
+  .toast.show { opacity: 1; }
+
+  @media (prefers-reduced-motion: reduce) { .spinner { animation: none; } .card, .toast { transition: none; } }
+  @media (max-width: 640px) { .controls input[type="search"] { width: 130px; } .stamp { width: 100%; } }
 </style>
 </head>
 <body>
   <header class="bar">
     <div class="brand">
-      <span class="dot" id="liveDot" title="Read-only view"></span>
+      <span class="dot" title="Live queue"></span>
       <h1>Pipeline Board</h1>
+      <span class="scope">Broker Platform</span>
       <span class="sub" id="totalCount">—</span>
     </div>
     <div class="controls">
       <input type="search" id="search" placeholder="Search title or reasoning…" aria-label="Search ideas" />
-      <select id="fProduct" aria-label="Filter by product"><option value="">All products</option></select>
       <select id="fSource" aria-label="Filter by source"><option value="">All sources</option></select>
       <label class="toggle"><input type="checkbox" id="hideEmpty" /> Hide empty</label>
       <label class="toggle"><input type="checkbox" id="showClosed" checked /> Show closed</label>
@@ -227,18 +236,26 @@
   </header>
 
   <div class="scroll" id="scroll">
-    <div class="state" id="loading"><div class="spinner"></div><p>Loading the queue…</p></div>
+    <div class="state" id="loading"><div class="spinner"></div><p>Loading the Broker Platform queue…</p></div>
     <div class="phase-row" id="phaseRow" hidden></div>
     <div class="board" id="board" hidden></div>
   </div>
+
+  <div class="overlay" id="overlay" hidden></div>
+  <div class="toast" id="toast" hidden></div>
 
 <script>
 (function () {
   "use strict";
 
-  // Carry an optional ?key= through to the API and into resolve.html links,
-  // so a gated board keeps working end to end.
   var KEY = new URLSearchParams(location.search).get("key") || "";
+
+  // ── Scope: this board shows Broker Platform ideas only. ──────────────
+  // An idea is in scope if its Product names the vetting / broker product.
+  // If a Broker idea is missing here, its Product cell likely uses a word this
+  // pattern doesn't catch — widen SCOPE_MATCH (one line) and redeploy.
+  var SCOPE_MATCH = /broker|vetting|carrier/i;
+  function inScope(idea) { return SCOPE_MATCH.test(idea.product || ""); }
 
   var PHASES = [
     { name: "Intake", tint: "#64748b", stages: ["Captured", "Enriching"] },
@@ -249,19 +266,35 @@
   ];
   var KNOWN = PHASES.reduce(function (a, p) { return a.concat(p.stages); }, []);
 
+  // Which Review actions are offered, by Stage.
+  // Approve only at In Review (the idea has been designed -> has a real Build Sequence).
+  function reviewOptions(stage) {
+    if (stage === "In Review") return ["Approved", "Hold", "Revise Design", "Revise Research", "Declined"];
+    if (["Captured", "Enriching", "Designing", "Blocked"].indexOf(stage) >= 0) return ["Hold", "Declined"];
+    return []; // Approved onward + Declined are watcher-owned -> read-only
+  }
+
+  var OPT_META = {
+    "Approved":        { color: "#48bb78", note: "passes the build gate" },
+    "Hold":            { color: "#94a3b8", note: "park, with a note" },
+    "Revise Design":   { color: "#d69e2e", note: "back to Designing" },
+    "Revise Research": { color: "#d69e2e", note: "back to Research" },
+    "Declined":        { color: "#e53e3e", note: "terminal" }
+  };
+
   var els = {
     board: document.getElementById("board"),
     phaseRow: document.getElementById("phaseRow"),
     loading: document.getElementById("loading"),
     search: document.getElementById("search"),
-    fProduct: document.getElementById("fProduct"),
     fSource: document.getElementById("fSource"),
     hideEmpty: document.getElementById("hideEmpty"),
     showClosed: document.getElementById("showClosed"),
     refresh: document.getElementById("refresh"),
     stamp: document.getElementById("stamp"),
     total: document.getElementById("totalCount"),
-    scroll: document.getElementById("scroll")
+    overlay: document.getElementById("overlay"),
+    toast: document.getElementById("toast")
   };
 
   var ALL = [];
@@ -269,36 +302,31 @@
   function api(path) { return path + (KEY ? (path.indexOf("?") < 0 ? "?" : "&") + "key=" + encodeURIComponent(KEY) : ""); }
   function resolveLink(id) { return "resolve.html?id=" + encodeURIComponent(id) + (KEY ? "&key=" + encodeURIComponent(KEY) : ""); }
 
-  function productStyle(p) {
+  function productSpine(p) {
     var s = (p || "").toLowerCase();
-    if (s.indexOf("vetting") >= 0 || s.indexOf("broker") >= 0 || s.indexOf("carrier") >= 0) return { spine: "#305d94", bg: "#e7eef6", ink: "#2a4d77" };
-    if (s.indexOf("roof") >= 0) return { spine: "#ed8936", bg: "#fdeede", ink: "#9c5715" };
-    if (s.indexOf("united") >= 0 || s.indexOf("dispatch") >= 0 || s.indexOf("transport") >= 0) return { spine: "#0d9488", bg: "#dcf3f0", ink: "#0a6b62" };
-    return { spine: "#94a3b8", bg: "#eef2f8", ink: "#5b6878" };
+    if (s.indexOf("vetting") >= 0 || s.indexOf("broker") >= 0 || s.indexOf("carrier") >= 0) return "#305d94";
+    return "#94a3b8";
   }
-
   function reviewPill(v) {
     var s = (v || "").toLowerCase();
     if (s.indexOf("approve") >= 0) return { cls: "approved", txt: "Approved" };
     if (s.indexOf("decline") >= 0) return { cls: "declined", txt: "Declined" };
     if (s.indexOf("revise") >= 0) return { cls: "revise", txt: v };
     if (s.indexOf("hold") >= 0) return { cls: "hold", txt: "Hold" };
-    if (s === "" ) return null;
+    if (s === "") return null;
     return { cls: "pending", txt: v };
   }
-
-  function el(tag, cls, text) {
-    var n = document.createElement(tag);
-    if (cls) n.className = cls;
-    if (text != null) n.textContent = text;
-    return n;
-  }
+  function el(tag, cls, text) { var n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; }
 
   function buildCard(idea) {
-    var prod = productStyle(idea.product);
-    var card = el("a", "card");
-    card.href = resolveLink(idea.id);
-    card.style.setProperty("--spine", prod.spine);
+    var card = el("div", "card");
+    card.tabIndex = 0;
+    card.setAttribute("role", "link");
+    card.setAttribute("aria-label", "Open " + (idea.id || "idea") + " in the resolve view");
+    card.style.setProperty("--spine", productSpine(idea.product));
+    function open() { location.href = resolveLink(idea.id); }
+    card.addEventListener("click", function (e) { if (e.target.closest(".no-nav")) return; open(); });
+    card.addEventListener("keydown", function (e) { if ((e.key === "Enter" || e.key === " ") && !e.target.closest(".no-nav")) { e.preventDefault(); open(); } });
 
     var top = el("div", "card-top");
     top.appendChild(el("span", "card-id", idea.id || "—"));
@@ -306,11 +334,8 @@
     if (!isNaN(pNum)) {
       var pri = el("span", "pri");
       pri.appendChild(el("span", null, String(pNum)));
-      var bar = el("span", "bar");
-      var fill = document.createElement("i");
-      fill.style.width = Math.max(0, Math.min(100, pNum)) + "%";
-      bar.appendChild(fill);
-      pri.appendChild(bar);
+      var bar = el("span", "bar"); var fill = document.createElement("i");
+      fill.style.width = Math.max(0, Math.min(100, pNum)) + "%"; bar.appendChild(fill); pri.appendChild(bar);
       top.appendChild(pri);
     }
     card.appendChild(top);
@@ -320,91 +345,193 @@
 
     var badges = el("div", "badges");
     var rp = reviewPill(idea.review);
-    if (rp) { var pill = el("span", "pill " + rp.cls, rp.txt); badges.appendChild(pill); }
-    if (idea.product) {
-      var pb = el("span", "badge product", idea.product);
-      pb.style.setProperty("--prod-bg", prod.bg);
-      pb.style.setProperty("--prod-ink", prod.ink);
-      badges.appendChild(pb);
-    }
+    if (rp) badges.appendChild(el("span", "pill " + rp.cls, rp.txt));
     if (idea.source) badges.appendChild(el("span", "badge source", idea.source));
     if (badges.childNodes.length) card.appendChild(badges);
 
-    var meta = el("div", "meta");
-    var revs = parseInt(idea.revisions, 10);
-    if (!isNaN(revs) && revs > 0) meta.appendChild(el("span", "chip warn", "\u21BB " + revs + " revision" + (revs === 1 ? "" : "s")));
-    if (idea.previewUrl) {
-      var pv = el("span", "chip");
-      var a = document.createElement("a");
-      a.href = idea.previewUrl; a.target = "_blank"; a.rel = "noopener";
-      a.textContent = "Preview \u2197";
-      a.addEventListener("click", function (e) { e.stopPropagation(); });
-      pv.appendChild(a);
-      meta.appendChild(pv);
-    }
-    if (idea.prodUrl) {
-      var lv = el("span", "chip");
-      var a2 = document.createElement("a");
-      a2.href = idea.prodUrl; a2.target = "_blank"; a2.rel = "noopener";
-      a2.textContent = "Live \u2197";
-      a2.addEventListener("click", function (e) { e.stopPropagation(); });
-      lv.appendChild(a2);
-      meta.appendChild(lv);
-    }
-    if (meta.childNodes.length) card.appendChild(meta);
-
     if (idea.blockedReason) card.appendChild(el("div", "blocked-note", "Blocked: " + idea.blockedReason));
 
+    // Footer: links + Decide
+    var foot = el("div", "card-foot");
+    var links = el("div", "links");
+    var revs = parseInt(idea.revisions, 10);
+    if (!isNaN(revs) && revs > 0) links.appendChild(el("span", "chip warn", "\u21BB " + revs));
+    if (idea.previewUrl) links.appendChild(extLink(idea.previewUrl, "Preview \u2197"));
+    if (idea.prodUrl) links.appendChild(extLink(idea.prodUrl, "Live \u2197"));
+    foot.appendChild(links);
+
+    var opts = reviewOptions(idea.stage || "");
+    if (opts.length) {
+      var btn = el("button", "decide no-nav", "Decide \u25BE");
+      btn.addEventListener("click", function (e) { e.stopPropagation(); openMenu(idea, opts); });
+      foot.appendChild(btn);
+    }
+    card.appendChild(foot);
     return card;
   }
 
+  function extLink(href, label) {
+    var span = el("span", "chip no-nav");
+    var a = document.createElement("a");
+    a.href = href; a.target = "_blank"; a.rel = "noopener"; a.textContent = label; a.className = "no-nav";
+    a.addEventListener("click", function (e) { e.stopPropagation(); });
+    span.appendChild(a);
+    return span;
+  }
+
+  // ── Decision modal ───────────────────────────────────────────────────
+  function closeModal() { els.overlay.hidden = true; els.overlay.innerHTML = ""; document.removeEventListener("keydown", escClose); }
+  function escClose(e) { if (e.key === "Escape") closeModal(); }
+  function shell(idea) {
+    els.overlay.innerHTML = "";
+    var modal = el("div", "modal");
+    var head = el("div", "modal-head");
+    head.appendChild(el("span", "m-id", idea.id));
+    var x = el("button", "m-close", "\u00D7"); x.setAttribute("aria-label", "Close"); x.addEventListener("click", closeModal);
+    head.appendChild(x);
+    modal.appendChild(head);
+    els.overlay.appendChild(modal);
+    els.overlay.hidden = false;
+    document.addEventListener("keydown", escClose);
+    els.overlay.onclick = function (e) { if (e.target === els.overlay) closeModal(); };
+    return modal;
+  }
+
+  function openMenu(idea, opts) {
+    var m = shell(idea);
+    m.appendChild(el("h3", null, "Review " + idea.id));
+    m.appendChild(el("p", "m-sub", idea.title || ""));
+    var list = el("div", "opt-list");
+    opts.forEach(function (choice) {
+      var meta = OPT_META[choice] || { color: "#94a3b8", note: "" };
+      var b = el("button", "opt");
+      var d = el("span", "dotc"); d.style.background = meta.color; b.appendChild(d);
+      b.appendChild(el("span", null, choice));
+      if (meta.note) b.appendChild(el("small", null, meta.note));
+      b.addEventListener("click", function () { openConfirm(idea, choice); });
+      list.appendChild(b);
+    });
+    m.appendChild(list);
+  }
+
+  function openConfirm(idea, choice) {
+    var m = shell(idea);
+    var isApprove = choice === "Approved";
+    var isDecline = choice === "Declined";
+    var isRevise = choice.indexOf("Revise") === 0;
+    var isHold = choice === "Hold";
+
+    m.appendChild(el("h3", null, choice + " " + idea.id + "?"));
+    m.appendChild(el("p", "m-sub", idea.title || ""));
+
+    if (isApprove) {
+      var w = el("div", "m-warn blue");
+      w.innerHTML = "<strong>This passes the build gate.</strong> On its next run the watcher fires a real autonomous build on the <strong>staging</strong> branch \u2014 it spends API credits and commits code. It does not promote to production; that stays a separate manual step.";
+      m.appendChild(w);
+      if (!idea.hasBuildSequence) {
+        var nb = el("div", "m-warn amber");
+        nb.innerHTML = "<strong>No Build Sequence yet.</strong> This idea hasn't been through the resolve view, so the build will likely produce \u201Cno changes\u201D (the IDEA-0012 trap). Consider resolving it first.";
+        m.appendChild(nb);
+      }
+    } else if (isDecline) {
+      m.appendChild(warn("red", "<strong>Declining is terminal.</strong> The idea stops here and the reason is logged. You can add one below."));
+    } else if (isRevise) {
+      var back = choice === "Revise Design" ? "Designing" : "Research";
+      m.appendChild(warn("amber", "Sends " + idea.id + " back to <strong>" + back + "</strong>. Your feedback travels with it into the redo, so be specific about what should change."));
+    } else if (isHold) {
+      m.appendChild(warn("blue", "Parks " + idea.id + " with an optional note. Nothing else changes."));
+    }
+
+    var ta = null;
+    if (isRevise || isDecline || isHold) {
+      ta = document.createElement("textarea");
+      ta.className = "m-feedback";
+      ta.placeholder = isRevise ? "What should change? (required)" : "Optional note\u2026";
+      m.appendChild(ta);
+    }
+
+    var errLine = el("p", "m-err", ""); m.appendChild(errLine);
+
+    var actions = el("div", "m-actions");
+    var back = el("button", "btn", "Back"); back.addEventListener("click", function () { openMenu(idea, reviewOptions(idea.stage || "")); });
+    actions.appendChild(back);
+
+    var primaryClass = "btn primary" + (isApprove ? " go" : isDecline ? " danger" : "");
+    var label = isApprove ? "Approve & pass gate" : isDecline ? "Decline" : isRevise ? "Send back" : "Hold";
+    var go = el("button", primaryClass, label);
+    function syncEnabled() { if (isRevise) go.disabled = !(ta && ta.value.trim()); }
+    if (ta) ta.addEventListener("input", syncEnabled);
+    syncEnabled();
+    go.addEventListener("click", function () {
+      var fb = ta ? ta.value.trim() : "";
+      if (isRevise && !fb) { errLine.textContent = "Add feedback so the redo has direction."; return; }
+      submit(idea, choice, fb, go, errLine);
+    });
+    actions.appendChild(go);
+    m.appendChild(actions);
+  }
+
+  function warn(kind, html) { var w = el("div", "m-warn " + kind); w.innerHTML = html; return w; }
+
+  function submit(idea, review, feedback, btn, errLine) {
+    btn.disabled = true; btn.textContent = "Saving\u2026"; errLine.textContent = "";
+    fetch(api("/api/review"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: idea.id, review: review, feedback: feedback })
+    })
+      .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+      .then(function (res) {
+        if (!res.ok || !res.j || res.j.ok === false) throw new Error((res.j && res.j.error) || "Save failed");
+        // reflect locally
+        for (var i = 0; i < ALL.length; i++) { if (ALL[i].id === idea.id) { ALL[i].review = review; break; } }
+        closeModal();
+        render();
+        showToast(idea.id + " \u2192 " + review + (review === "Approved" ? " \u00B7 watcher will build on next run" : ""));
+      })
+      .catch(function (e) { btn.disabled = false; btn.textContent = "Try again"; errLine.textContent = e.message; });
+  }
+
+  var toastTimer = null;
+  function showToast(msg) {
+    els.toast.textContent = msg; els.toast.hidden = false;
+    requestAnimationFrame(function () { els.toast.classList.add("show"); });
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { els.toast.classList.remove("show"); setTimeout(function () { els.toast.hidden = true; }, 250); }, 3200);
+  }
+
+  // ── Filters + render ─────────────────────────────────────────────────
   function passesFilters(idea) {
     var q = els.search.value.trim().toLowerCase();
-    if (q) {
-      var hay = ((idea.title || "") + " " + (idea.reasoning || "") + " " + (idea.id || "")).toLowerCase();
-      if (hay.indexOf(q) < 0) return false;
-    }
-    if (els.fProduct.value && idea.product !== els.fProduct.value) return false;
+    if (q) { var hay = ((idea.title || "") + " " + (idea.reasoning || "") + " " + (idea.id || "")).toLowerCase(); if (hay.indexOf(q) < 0) return false; }
     if (els.fSource.value && idea.source !== els.fSource.value) return false;
     return true;
   }
 
   function render() {
-    var hideEmpty = els.hideEmpty.checked;
-    var showClosed = els.showClosed.checked;
-
-    // group by stage
-    var byStage = {};
-    var unknown = [];
-    var shown = 0;
-    ALL.forEach(function (idea) {
+    var hideEmpty = els.hideEmpty.checked, showClosed = els.showClosed.checked;
+    var scoped = ALL.filter(inScope);
+    var byStage = {}, unknown = [], shown = 0;
+    scoped.forEach(function (idea) {
       if (!passesFilters(idea)) return;
       shown++;
       var st = idea.stage || "";
-      if (KNOWN.indexOf(st) >= 0) { (byStage[st] = byStage[st] || []).push(idea); }
+      if (KNOWN.indexOf(st) >= 0) (byStage[st] = byStage[st] || []).push(idea);
       else unknown.push(idea);
     });
 
-    els.phaseRow.innerHTML = "";
-    els.board.innerHTML = "";
-
-    var phaseCols = [];
-    var phaseSpans = [];
+    els.phaseRow.innerHTML = ""; els.board.innerHTML = "";
+    var phaseCols = [], phaseSpans = [];
 
     PHASES.forEach(function (phase) {
       if (phase.name === "Closed" && !showClosed) return;
-      var stages = phase.stages.slice();
-      var phaseCount = 0;
-      var visibleStages = [];
-
-      stages.forEach(function (st) {
+      var phaseCount = 0, visibleStages = [];
+      phase.stages.forEach(function (st) {
         var cards = byStage[st] || [];
         if (hideEmpty && cards.length === 0) return;
-        visibleStages.push({ stage: st, cards: cards });
-        phaseCount += cards.length;
+        visibleStages.push({ stage: st, cards: cards }); phaseCount += cards.length;
       });
       if (visibleStages.length === 0) return;
-
       phaseSpans.push({ name: phase.name, tint: phase.tint, span: visibleStages.length, count: phaseCount });
       visibleStages.forEach(function (vs) { phaseCols.push(vs); });
     });
@@ -414,111 +541,70 @@
       phaseCols.push({ stage: "Other / unmapped stage", cards: unknown });
     }
 
-    // phase band row — each phase header spans its visible stage columns
     var phaseTemplate = [];
     phaseSpans.forEach(function (ps) {
-      var band = el("div", "phase");
-      band.style.setProperty("--phase-tint", ps.tint);
-      band.appendChild(el("span", null, ps.name));
-      band.appendChild(el("span", "pcount", String(ps.count)));
-      band.style.gridColumn = "span " + ps.span;
-      els.phaseRow.appendChild(band);
+      var band = el("div", "phase"); band.style.setProperty("--phase-tint", ps.tint);
+      band.appendChild(el("span", null, ps.name)); band.appendChild(el("span", "pcount", String(ps.count)));
+      band.style.gridColumn = "span " + ps.span; els.phaseRow.appendChild(band);
       phaseTemplate.push("calc(var(--col-w) * " + ps.span + " + 12px * " + (ps.span - 1) + ")");
     });
     els.phaseRow.style.gridTemplateColumns = phaseTemplate.join(" ");
 
-    // columns
     phaseCols.forEach(function (vs) {
       var col = el("div", "col" + (vs.cards.length === 0 ? " empty" : ""));
       var head = el("div", "col-head");
-      head.appendChild(el("span", "name", vs.stage));
-      head.appendChild(el("span", "count", String(vs.cards.length)));
+      head.appendChild(el("span", "name", vs.stage)); head.appendChild(el("span", "count", String(vs.cards.length)));
       col.appendChild(head);
       var body = el("div", "col-body");
-      if (vs.cards.length === 0) {
-        body.appendChild(el("div", "col-empty-note", "Nothing here"));
-      } else {
-        vs.cards
-          .sort(function (a, b) { return (parseInt(b.priority, 10) || 0) - (parseInt(a.priority, 10) || 0); })
-          .forEach(function (idea) { body.appendChild(buildCard(idea)); });
-      }
-      col.appendChild(body);
-      els.board.appendChild(col);
+      if (vs.cards.length === 0) body.appendChild(el("div", "col-empty-note", "Nothing here"));
+      else vs.cards.sort(function (a, b) { return (parseInt(b.priority, 10) || 0) - (parseInt(a.priority, 10) || 0); })
+                   .forEach(function (idea) { body.appendChild(buildCard(idea)); });
+      col.appendChild(body); els.board.appendChild(col);
     });
 
-    els.total.textContent = shown + (shown === ALL.length ? "" : " / " + ALL.length) + " idea" + (ALL.length === 1 ? "" : "s");
+    els.total.textContent = shown + " of " + scoped.length + " Broker idea" + (scoped.length === 1 ? "" : "s");
 
     if (phaseCols.length === 0) {
-      els.board.appendChild(emptyState());
-      els.phaseRow.hidden = true;
-    } else {
-      els.phaseRow.hidden = false;
-    }
+      var s = el("div", "state"); s.appendChild(el("h2", null, "No Broker Platform ideas to show"));
+      s.appendChild(el("p", null, scoped.length === 0 ? "Nothing in scope yet \u2014 or the Product cells don't match the scope pattern." : "Clear the filters or search."));
+      s.style.gridColumn = "1 / -1"; els.board.appendChild(s); els.phaseRow.hidden = true;
+    } else els.phaseRow.hidden = false;
     els.board.hidden = false;
   }
 
-  function emptyState() {
-    var s = el("div", "state");
-    s.appendChild(el("h2", null, "No ideas match"));
-    s.appendChild(el("p", null, "Clear the filters or search to see the full queue."));
-    s.style.gridColumn = "1 / -1";
-    return s;
-  }
-
-  function populateFilters() {
-    var prods = {}, srcs = {};
-    ALL.forEach(function (i) { if (i.product) prods[i.product] = 1; if (i.source) srcs[i.source] = 1; });
-    fill(els.fProduct, Object.keys(prods).sort());
-    fill(els.fSource, Object.keys(srcs).sort());
-  }
   function fill(sel, vals) {
-    var keep = sel.value;
-    sel.length = 1;
+    var keep = sel.value; sel.length = 1;
     vals.forEach(function (v) { var o = document.createElement("option"); o.value = v; o.textContent = v; sel.appendChild(o); });
     if (vals.indexOf(keep) >= 0) sel.value = keep;
   }
-
-  function setStamp(iso) {
-    var d = iso ? new Date(iso) : new Date();
-    els.stamp.textContent = "updated " + d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  function populateFilters() {
+    var srcs = {}; ALL.filter(inScope).forEach(function (i) { if (i.source) srcs[i.source] = 1; });
+    fill(els.fSource, Object.keys(srcs).sort());
   }
+  function setStamp(iso) { var d = iso ? new Date(iso) : new Date(); els.stamp.textContent = "updated " + d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }); }
 
   function showError(msg) {
-    els.loading.hidden = true;
-    els.phaseRow.hidden = true;
-    els.board.hidden = false;
-    els.board.innerHTML = "";
-    var s = el("div", "state error");
-    s.appendChild(el("h2", null, "Couldn't load the queue"));
+    els.loading.hidden = true; els.phaseRow.hidden = true; els.board.hidden = false; els.board.innerHTML = "";
+    var s = el("div", "state error"); s.appendChild(el("h2", null, "Couldn't load the queue"));
     s.appendChild(el("p", null, msg || "The board API didn't respond. Check the Vercel function logs."));
-    s.style.gridColumn = "1 / -1";
-    els.board.appendChild(s);
+    s.style.gridColumn = "1 / -1"; els.board.appendChild(s);
   }
 
   function load() {
-    els.refresh.disabled = true;
-    els.refresh.textContent = "Loading…";
+    els.refresh.disabled = true; els.refresh.textContent = "Loading…";
     fetch(api("/api/board"), { cache: "no-store" })
       .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
       .then(function (res) {
-        if (!res.ok || !res.j || res.j.ok === false) throw new Error((res.j && res.j.error) || ("HTTP " + (res.j && res.j.status)));
-        ALL = (res.j.ideas || []);
-        els.loading.hidden = true;
-        populateFilters();
-        setStamp(res.j.updatedAt);
-        render();
+        if (!res.ok || !res.j || res.j.ok === false) throw new Error((res.j && res.j.error) || "HTTP error");
+        ALL = res.j.ideas || [];
+        els.loading.hidden = true; populateFilters(); setStamp(res.j.updatedAt); render();
       })
       .catch(function (e) { showError(e.message); })
       .finally(function () { els.refresh.disabled = false; els.refresh.textContent = "Refresh"; });
   }
 
-  // events
-  ["input", "change"].forEach(function (ev) {
-    els.search.addEventListener(ev, render);
-  });
-  [els.fProduct, els.fSource, els.hideEmpty, els.showClosed].forEach(function (n) {
-    n.addEventListener("change", render);
-  });
+  els.search.addEventListener("input", render);
+  [els.fSource, els.hideEmpty, els.showClosed].forEach(function (n) { n.addEventListener("change", render); });
   els.refresh.addEventListener("click", load);
 
   load();
