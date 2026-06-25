@@ -69,12 +69,17 @@
     cursor: pointer; user-select: none; padding: 4px 6px; border-radius: 6px;
   }
   .toggle input { accent-color: var(--action); }
-  button.refresh {
-    font-family: var(--sans); font-size: 13px; font-weight: 550; color: #fff; background: var(--nwd);
-    border: 0; border-radius: 8px; height: 32px; padding: 0 14px; cursor: pointer;
+  button.ghost {
+    font-family: var(--sans); font-size: 13px; font-weight: 550; color: var(--ink-soft); background: #fff;
+    border: 1px solid var(--line); border-radius: 8px; height: 32px; padding: 0 13px; cursor: pointer;
   }
-  button.refresh:hover { background: #284f7e; }
-  button.refresh:disabled { opacity: .55; cursor: default; }
+  button.ghost:hover { background: #f4f6fa; }
+  button.submit {
+    font-family: var(--sans); font-size: 13px; font-weight: 650; color: #fff; background: var(--nwd);
+    border: 0; border-radius: 8px; height: 32px; padding: 0 16px; cursor: pointer;
+  }
+  button.submit:hover { background: #284f7e; }
+  button:disabled { opacity: .55; cursor: default; }
   .stamp { font-family: var(--mono); font-size: 11px; color: var(--ink-faint); white-space: nowrap; }
 
   /* ── Board ─────────────────────────────────────────────── */
@@ -205,6 +210,8 @@
   .btn.primary.go:hover { background: #38a169; }
   .btn:disabled { opacity: .5; cursor: default; }
   .m-err { font-size: 12px; color: var(--red); margin: 10px 0 0; min-height: 1px; }
+  .res-line { font-family: var(--mono); font-size: 12px; color: var(--ink); background: #f7f9fc; border: 1px solid var(--line-soft); border-radius: 7px; padding: 7px 10px; }
+  .res-pre { font-family: var(--mono); font-size: 11.5px; color: var(--ink); background: #f7f9fc; border: 1px solid var(--line-soft); border-radius: 9px; padding: 10px 12px; max-height: 240px; overflow: auto; white-space: pre-wrap; margin: 0 0 12px; }
 
   .toast {
     position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%);
@@ -232,7 +239,8 @@
       <label class="toggle"><input type="checkbox" id="hideEmpty" /> Hide empty</label>
       <label class="toggle"><input type="checkbox" id="showClosed" checked /> Show closed</label>
       <span class="stamp" id="stamp"></span>
-      <button class="refresh" id="refresh">Refresh</button>
+      <button class="ghost" id="refresh">Refresh</button>
+      <button class="submit" id="submit" title="Run the watcher: process every decision you've made this session">Submit</button>
     </div>
   </header>
 
@@ -295,7 +303,8 @@
     stamp: document.getElementById("stamp"),
     total: document.getElementById("totalCount"),
     overlay: document.getElementById("overlay"),
-    toast: document.getElementById("toast")
+    toast: document.getElementById("toast"),
+    submit: document.getElementById("submit")
   };
 
   var ALL = [];
@@ -604,9 +613,106 @@
       .finally(function () { els.refresh.disabled = false; els.refresh.textContent = "Refresh"; });
   }
 
+  // ── Submit: run the watcher ──────────────────────────────────────────
+  function openSubmit() {
+    var scoped = ALL.filter(inScope);
+    var pend = scoped.filter(function (i) { return (i.stage || "") === "In Review" && /approve|decline|revise|hold/i.test(i.review || ""); });
+    var approved = pend.filter(function (i) { return /approve/i.test(i.review || ""); });
+    var revise = pend.filter(function (i) { return /revise/i.test(i.review || ""); });
+    var holds = pend.filter(function (i) { return /hold/i.test(i.review || ""); });
+    var declines = pend.filter(function (i) { return /decline/i.test(i.review || ""); });
+
+    els.overlay.innerHTML = "";
+    var modal = el("div", "modal");
+    var head = el("div", "modal-head");
+    head.appendChild(el("span", "m-id", "WATCHER"));
+    var x = el("button", "m-close", "\u00D7"); x.setAttribute("aria-label", "Close"); x.addEventListener("click", closeModal);
+    head.appendChild(x); modal.appendChild(head);
+
+    modal.appendChild(el("h3", null, "Submit to the watcher"));
+    modal.appendChild(el("p", "m-sub", "Runs the watcher now. It reads every decision in the queue and acts on it: Approved fires a build, Revise loops back with your feedback, Declined and Hold are logged."));
+
+    if (approved.length) {
+      modal.appendChild(warn("blue", "<strong>" + approved.length + " Approved</strong> \u2192 each fires a real autonomous build on the staging branch (spends API credits, commits code). Promotion to production stays separate and manual."));
+    }
+    var bits = [];
+    if (approved.length) bits.push(approved.length + " Approved");
+    if (revise.length) bits.push(revise.length + " Revise");
+    if (holds.length) bits.push(holds.length + " Hold");
+    if (declines.length) bits.push(declines.length + " Declined");
+    modal.appendChild(el("p", "m-sub", bits.length
+      ? "Waiting at In Review: " + bits.join(" \u00B7 ") + "."
+      : "No new decisions waiting at In Review \u2014 running will just advance any in-flight builds."));
+
+    var errLine = el("p", "m-err", "");
+    modal.appendChild(errLine);
+
+    var actions = el("div", "m-actions");
+    var cancel = el("button", "btn", "Cancel"); cancel.addEventListener("click", closeModal); actions.appendChild(cancel);
+    var go = el("button", "btn primary go", "Submit");
+    go.addEventListener("click", function () { runSubmit(go, cancel, errLine, modal); });
+    actions.appendChild(go);
+    modal.appendChild(actions);
+
+    els.overlay.appendChild(modal);
+    els.overlay.hidden = false;
+    document.addEventListener("keydown", escClose);
+    els.overlay.onclick = function (e) { if (e.target === els.overlay) closeModal(); };
+  }
+
+  function runSubmit(go, cancel, errLine, modal) {
+    go.disabled = true; cancel.disabled = true; go.textContent = "Running\u2026"; errLine.textContent = "";
+    fetch(api("/api/submit"), { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" })
+      .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+      .then(function (res) {
+        if (!res.ok || !res.j || res.j.ok === false) throw new Error((res.j && res.j.error) || "Watcher run failed");
+        showResult(modal, res.j.watcher);
+        load(); // refresh the board behind the modal
+      })
+      .catch(function (e) { go.disabled = false; cancel.disabled = false; go.textContent = "Try again"; errLine.textContent = e.message; });
+  }
+
+  function showResult(modal, watcher) {
+    modal.innerHTML = "";
+    var head = el("div", "modal-head");
+    head.appendChild(el("span", "m-id", "WATCHER"));
+    var x = el("button", "m-close", "\u00D7"); x.setAttribute("aria-label", "Close"); x.addEventListener("click", closeModal);
+    head.appendChild(x); modal.appendChild(head);
+    modal.appendChild(el("h3", null, "Watcher ran"));
+
+    var lines = extractLines(watcher);
+    if (lines.length) {
+      var list = el("div", "opt-list");
+      lines.forEach(function (ln) { list.appendChild(el("div", "res-line", ln)); });
+      modal.appendChild(list);
+    } else {
+      var pre = document.createElement("pre"); pre.className = "res-pre";
+      pre.textContent = typeof watcher === "string" ? watcher : JSON.stringify(watcher, null, 2);
+      modal.appendChild(pre);
+    }
+    var actions = el("div", "m-actions");
+    var done = el("button", "btn primary", "Done"); done.addEventListener("click", closeModal); actions.appendChild(done);
+    modal.appendChild(actions);
+  }
+
+  function extractLines(w) {
+    if (Array.isArray(w)) return w.map(lineOf);
+    if (w && typeof w === "object") {
+      var keys = ["results", "actions", "log", "lines", "processed", "messages"];
+      for (var k = 0; k < keys.length; k++) { if (Array.isArray(w[keys[k]])) return w[keys[k]].map(lineOf); }
+    }
+    return [];
+  }
+  function lineOf(x) {
+    if (typeof x === "string") return x;
+    if (x && typeof x === "object") { if (x.id && x.action) return x.id + ": " + x.action; return JSON.stringify(x); }
+    return String(x);
+  }
+
   els.search.addEventListener("input", render);
   [els.fSource, els.hideEmpty, els.showClosed].forEach(function (n) { n.addEventListener("change", render); });
   els.refresh.addEventListener("click", load);
+  els.submit.addEventListener("click", openSubmit);
 
   load();
 })();
