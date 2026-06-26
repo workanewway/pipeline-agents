@@ -122,14 +122,16 @@ Output ONLY a JSON object, no prose, no fences:
   return normalizeDraft(parsed);
 }
 
-async function nextIdeaId(): Promise<string> {
+async function nextRowAndId(): Promise<{ rowNum: number; ideaId: string }> {
   const { rows } = await readQueue(sheets);
   let maxNum = 0;
+  let lastRow = 1; // header is row 1
   for (const r of rows) {
     const m = /IDEA-(\d+)/.exec(r.get("Idea ID"));
     if (m) maxNum = Math.max(maxNum, parseInt(m[1], 10));
+    if (r.rowNum > lastRow) lastRow = r.rowNum;
   }
-  return `IDEA-${String(maxNum + 1).padStart(4, "0")}`;
+  return { rowNum: lastRow + 1, ideaId: `IDEA-${String(maxNum + 1).padStart(4, "0")}` };
 }
 
 function buildRow(d: Draft, ideaId: string, now: string): string[] {
@@ -171,11 +173,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (isConfirm) {
       const draft = normalizeDraft(body.draft);
       const now = new Date().toISOString();
-      const ideaId = await nextIdeaId();
+      const { rowNum, ideaId } = await nextRowAndId();
       const row = buildRow(draft, ideaId, now);
-      await sheets.spreadsheets.values.append({
+      // Write to an EXPLICIT A{n}:AB{n} range. (append with "A:AB" lets Sheets
+      // table-detection pick the anchor column — it mis-placed rows starting at N.)
+      await sheets.spreadsheets.values.update({
         spreadsheetId: SHEET_ID,
-        range: `${TAB}!A:AB`,
+        range: `${TAB}!A${rowNum}:AB${rowNum}`,
         valueInputOption: "USER_ENTERED",
         requestBody: { values: [row] },
       });
