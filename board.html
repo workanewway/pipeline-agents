@@ -212,6 +212,19 @@
   .m-err { font-size: 12px; color: var(--red); margin: 10px 0 0; min-height: 1px; }
   .res-line { font-family: var(--mono); font-size: 12px; color: var(--ink); background: #f7f9fc; border: 1px solid var(--line-soft); border-radius: 7px; padding: 7px 10px; }
   .res-pre { font-family: var(--mono); font-size: 11.5px; color: var(--ink); background: #f7f9fc; border: 1px solid var(--line-soft); border-radius: 9px; padding: 10px 12px; max-height: 240px; overflow: auto; white-space: pre-wrap; margin: 0 0 12px; }
+  .new-idea-btn { font-family: var(--sans); font-size: 13px; font-weight: 600; color: var(--nwd); background: #fff; border: 1px solid rgba(48,93,148,.4); border-radius: 8px; height: 32px; padding: 0 13px; cursor: pointer; }
+  .new-idea-btn:hover { background: #eef3f9; }
+  .field { margin-bottom: 12px; }
+  .field > label { display: block; font-size: 10.5px; font-weight: 650; letter-spacing: .04em; text-transform: uppercase; color: var(--ink-faint); margin-bottom: 4px; }
+  .field input, .field select, .field textarea { width: 100%; font-family: var(--sans); font-size: 13px; color: var(--ink); border: 1px solid var(--line); border-radius: 9px; padding: 8px 11px; }
+  .field textarea { min-height: 130px; resize: vertical; }
+  .field input:focus-visible, .field select:focus-visible, .field textarea:focus-visible { outline: 2px solid var(--action); outline-offset: 1px; }
+  .field.row2 { display: flex; gap: 10px; }
+  .field.row2 > div { flex: 1; }
+  .preview { font-size: 12px; line-height: 1.45; color: var(--ink-soft); background: #f7f9fc; border: 1px solid var(--line-soft); border-radius: 9px; padding: 10px 12px; max-height: 150px; overflow: auto; margin-bottom: 12px; white-space: pre-wrap; }
+  .baked-badge { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 600; padding: 3px 9px; border-radius: 20px; margin-bottom: 12px; }
+  .baked-badge.yes { background: rgba(72,187,120,.15); color: #277a4b; }
+  .baked-badge.no { background: #eef2f8; color: var(--ink-soft); }
 
   .toast {
     position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%);
@@ -234,6 +247,7 @@
       <span class="sub" id="totalCount">—</span>
     </div>
     <div class="controls">
+      <button class="new-idea-btn" id="newIdea">+ New idea</button>
       <input type="search" id="search" placeholder="Search title or reasoning…" aria-label="Search ideas" />
       <select id="fSource" aria-label="Filter by source"><option value="">All sources</option></select>
       <label class="toggle"><input type="checkbox" id="hideEmpty" /> Hide empty</label>
@@ -304,7 +318,8 @@
     total: document.getElementById("totalCount"),
     overlay: document.getElementById("overlay"),
     toast: document.getElementById("toast"),
-    submit: document.getElementById("submit")
+    submit: document.getElementById("submit"),
+    newIdea: document.getElementById("newIdea")
   };
 
   var ALL = [];
@@ -709,10 +724,118 @@
     return String(x);
   }
 
+  // ── New idea (intake) ────────────────────────────────────────────────
+  var PRODUCTS = ["Broker Platform", "Roofing Proposals", "United Transportation"];
+
+  function intakeShell() {
+    els.overlay.innerHTML = "";
+    var modal = el("div", "modal");
+    var head = el("div", "modal-head");
+    head.appendChild(el("span", "m-id", "NEW IDEA"));
+    var x = el("button", "m-close", "\u00D7"); x.setAttribute("aria-label", "Close"); x.addEventListener("click", closeModal);
+    head.appendChild(x); modal.appendChild(head);
+    els.overlay.appendChild(modal);
+    els.overlay.hidden = false;
+    document.addEventListener("keydown", escClose);
+    els.overlay.onclick = function (e) { if (e.target === els.overlay) closeModal(); };
+    return modal;
+  }
+
+  function openIntake() { renderCompose(""); }
+
+  function renderCompose(prefill) {
+    var m = intakeShell();
+    m.appendChild(el("h3", null, "Add an idea"));
+    m.appendChild(el("p", "m-sub", "Paste or describe an idea \u2014 a thin seed or a full spec. Intake enriches it, you confirm, and it lands at Captured."));
+    var field = el("div", "field");
+    var ta = document.createElement("textarea");
+    ta.placeholder = "e.g. \u201Cshow dates on old timestamps\u201D \u2014 or paste a full build spec";
+    ta.value = prefill || "";
+    field.appendChild(ta);
+    m.appendChild(field);
+    var errLine = el("p", "m-err", ""); m.appendChild(errLine);
+    var actions = el("div", "m-actions");
+    var cancel = el("button", "btn", "Cancel"); cancel.addEventListener("click", closeModal); actions.appendChild(cancel);
+    var go = el("button", "btn primary", "Enrich \u2192");
+    go.addEventListener("click", function () {
+      var text = ta.value.trim();
+      if (!text) { errLine.textContent = "Paste an idea first."; return; }
+      runEnrich(text, go, errLine);
+    });
+    actions.appendChild(go);
+    m.appendChild(actions);
+    ta.focus();
+  }
+
+  function runEnrich(text, go, errLine) {
+    go.disabled = true; go.textContent = "Enriching\u2026"; errLine.textContent = "";
+    fetch(api("/api/intake"), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: text }) })
+      .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+      .then(function (res) {
+        if (!res.ok || !res.j || res.j.ok === false) throw new Error((res.j && res.j.error) || "Enrich failed");
+        renderDraft(text, res.j.draft);
+      })
+      .catch(function (e) { go.disabled = false; go.textContent = "Try again"; errLine.textContent = e.message; });
+  }
+
+  function renderDraft(text, draft) {
+    var m = intakeShell();
+    m.appendChild(el("h3", null, "Review before adding"));
+    m.appendChild(el("span", "baked-badge " + (draft.baked ? "yes" : "no"),
+      draft.baked ? "\u2713 Includes a build sequence \u2014 design will refine it, not rewrite"
+                  : "Thin seed \u2014 design will generate the spec"));
+
+    var fTitle = el("div", "field"); fTitle.appendChild(el("label", null, "Title"));
+    var inTitle = document.createElement("input"); inTitle.value = draft.title || ""; fTitle.appendChild(inTitle); m.appendChild(fTitle);
+
+    var fRow = el("div", "field row2");
+    var dProd = document.createElement("div"); dProd.appendChild(el("label", null, "Product"));
+    var selProd = document.createElement("select");
+    PRODUCTS.forEach(function (p) { var o = document.createElement("option"); o.value = p; o.textContent = p; if (p === draft.product) o.selected = true; selProd.appendChild(o); });
+    dProd.appendChild(selProd); fRow.appendChild(dProd);
+    var dPri = document.createElement("div"); dPri.appendChild(el("label", null, "Priority"));
+    var inPri = document.createElement("input"); inPri.type = "number"; inPri.min = "0"; inPri.max = "100"; inPri.value = String(draft.priorityScore || 60); dPri.appendChild(inPri); fRow.appendChild(dPri);
+    m.appendChild(fRow);
+
+    var previewText = [draft.reasoning,
+      draft.aiNativeApproach ? ("AI-native: " + draft.aiNativeApproach) : "",
+      draft.openQuestions ? ("Open questions: " + draft.openQuestions) : ""].filter(Boolean).join("\n\n");
+    if (previewText) { var prev = el("div", "preview", previewText); m.appendChild(prev); }
+
+    var errLine = el("p", "m-err", ""); m.appendChild(errLine);
+    var actions = el("div", "m-actions");
+    var back = el("button", "btn", "Back"); back.addEventListener("click", function () { renderCompose(text); }); actions.appendChild(back);
+    var go = el("button", "btn primary go", "Add to Captured");
+    go.addEventListener("click", function () {
+      var edited = {};
+      for (var k in draft) edited[k] = draft[k];
+      edited.title = inTitle.value.trim();
+      edited.product = selProd.value;
+      edited.priorityScore = Number(inPri.value) || 60;
+      runConfirm(text, edited, go, errLine);
+    });
+    actions.appendChild(go);
+    m.appendChild(actions);
+  }
+
+  function runConfirm(text, draft, go, errLine) {
+    go.disabled = true; go.textContent = "Adding\u2026"; errLine.textContent = "";
+    fetch(api("/api/intake"), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: text, confirm: true, draft: draft }) })
+      .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+      .then(function (res) {
+        if (!res.ok || !res.j || res.j.ok === false) throw new Error((res.j && res.j.error) || "Add failed");
+        closeModal();
+        load();
+        showToast(res.j.ideaId + " added to Captured \u00B7 " + res.j.product);
+      })
+      .catch(function (e) { go.disabled = false; go.textContent = "Try again"; errLine.textContent = e.message; });
+  }
+
   els.search.addEventListener("input", render);
   [els.fSource, els.hideEmpty, els.showClosed].forEach(function (n) { n.addEventListener("change", render); });
   els.refresh.addEventListener("click", load);
   els.submit.addEventListener("click", openSubmit);
+  els.newIdea.addEventListener("click", openIntake);
 
   load();
 })();
