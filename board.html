@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Pipeline Board — Broker Platform</title>
+<title>NewWay Foundry — Broker Platform</title>
 <style>
   :root {
     --bg: #f5f7fa;
@@ -242,7 +242,7 @@
   <header class="bar">
     <div class="brand">
       <span class="dot" title="Live queue"></span>
-      <h1>Pipeline Board</h1>
+      <h1>NewWay Foundry</h1>
       <span class="scope">Broker Platform</span>
       <span class="sub" id="totalCount">—</span>
     </div>
@@ -250,9 +250,10 @@
       <button class="new-idea-btn" id="newIdea">+ New idea</button>
       <input type="search" id="search" placeholder="Search title or reasoning…" aria-label="Search ideas" />
       <select id="fSource" aria-label="Filter by source"><option value="">All sources</option></select>
-      <label class="toggle"><input type="checkbox" id="hideEmpty" /> Hide empty</label>
+      <label class="toggle"><input type="checkbox" id="hideEmpty" checked /> Hide empty</label>
       <label class="toggle"><input type="checkbox" id="showClosed" checked /> Show closed</label>
       <span class="stamp" id="stamp"></span>
+      <button class="ghost" id="runDesign">Run design</button>
       <button class="ghost" id="refresh">Refresh</button>
       <button class="submit" id="submit" title="Run the watcher: process every decision you've made this session">Submit</button>
     </div>
@@ -319,7 +320,8 @@
     overlay: document.getElementById("overlay"),
     toast: document.getElementById("toast"),
     submit: document.getElementById("submit"),
-    newIdea: document.getElementById("newIdea")
+    newIdea: document.getElementById("newIdea"),
+    runDesign: document.getElementById("runDesign")
   };
 
   var ALL = [];
@@ -427,6 +429,15 @@
     m.appendChild(el("h3", null, "Review " + idea.id));
     m.appendChild(el("p", "m-sub", idea.title || ""));
     var list = el("div", "opt-list");
+    // Pre-design stages: the primary action is sending the idea to design.
+    if (["Captured", "Enriching", "Designing"].indexOf(idea.stage || "") >= 0) {
+      var db = el("button", "opt");
+      var dd = el("span", "dotc"); dd.style.background = "#3182ce"; db.appendChild(dd);
+      db.appendChild(el("span", null, "Send to Design"));
+      db.appendChild(el("small", null, idea.hasBuildSequence ? "refine spec" : "generate spec"));
+      db.addEventListener("click", function () { openDesignConfirm(idea); });
+      list.appendChild(db);
+    }
     opts.forEach(function (choice) {
       var meta = OPT_META[choice] || { color: "#94a3b8", note: "" };
       var b = el("button", "opt");
@@ -437,6 +448,67 @@
       list.appendChild(b);
     });
     m.appendChild(list);
+  }
+
+  function openDesignConfirm(idea) {
+    var m = shell(idea);
+    m.appendChild(el("h3", null, "Send " + idea.id + " to Design?"));
+    m.appendChild(el("p", "m-sub", idea.title || ""));
+    m.appendChild(warn("blue", idea.hasBuildSequence
+      ? "Refines the existing build sequence and moves " + idea.id + " to In Review. Spends API credits."
+      : "Generates a design brief + build sequence and moves " + idea.id + " to In Review. Spends API credits."));
+    var errLine = el("p", "m-err", ""); m.appendChild(errLine);
+    var actions = el("div", "m-actions");
+    var back = el("button", "btn", "Back"); back.addEventListener("click", function () { openMenu(idea, reviewOptions(idea.stage || "")); });
+    actions.appendChild(back);
+    var go = el("button", "btn primary", "Send to Design");
+    go.addEventListener("click", function () { runDesign(idea.id, go, errLine); });
+    actions.appendChild(go);
+    m.appendChild(actions);
+  }
+
+  function runDesign(id, go, errLine) {
+    go.disabled = true; go.textContent = "Designing…"; errLine.textContent = "";
+    fetch(api("/api/run-design?id=" + encodeURIComponent(id)), { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" })
+      .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+      .then(function (res) {
+        if (!res.ok || !res.j || res.j.ok === false) throw new Error((res.j && res.j.error) || "Design failed");
+        var designed = res.j.result && res.j.result.designed;
+        closeModal(); load();
+        showToast((designed && designed.length) ? (id + " designed → In Review") : (id + ": no spec produced — check the design-brief logs"));
+      })
+      .catch(function (e) { go.disabled = false; go.textContent = "Try again"; errLine.textContent = e.message; });
+  }
+
+  function openRunDesign() {
+    var captured = ALL.filter(inScope).filter(function (i) { return (i.stage || "") === "Captured" && Number(i.priority) >= 60; });
+    captured.sort(function (a, b) { return (Number(b.priority) || 0) - (Number(a.priority) || 0); });
+    var top = captured[0];
+
+    els.overlay.innerHTML = "";
+    var modal = el("div", "modal");
+    var head = el("div", "modal-head");
+    head.appendChild(el("span", "m-id", "DESIGN"));
+    var x = el("button", "m-close", "\u00D7"); x.setAttribute("aria-label", "Close"); x.addEventListener("click", closeModal);
+    head.appendChild(x); modal.appendChild(head);
+    modal.appendChild(el("h3", null, "Run design"));
+    modal.appendChild(el("p", "m-sub", top
+      ? "Designs the highest-priority Captured idea: " + top.id + " — " + (top.title || "")
+      : "No Captured idea over priority 60 is waiting. (To design a specific idea, use Decide → Send to Design on its card.)"));
+    if (top) modal.appendChild(warn("blue", "Generates / refines its spec and moves it to In Review. Spends API credits. One idea per run."));
+    var errLine = el("p", "m-err", ""); modal.appendChild(errLine);
+    var actions = el("div", "m-actions");
+    var cancel = el("button", "btn", "Cancel"); cancel.addEventListener("click", closeModal); actions.appendChild(cancel);
+    if (top) {
+      var go = el("button", "btn primary", "Run design");
+      go.addEventListener("click", function () { runDesign(top.id, go, errLine); });
+      actions.appendChild(go);
+    }
+    modal.appendChild(actions);
+    els.overlay.appendChild(modal);
+    els.overlay.hidden = false;
+    document.addEventListener("keydown", escClose);
+    els.overlay.onclick = function (e) { if (e.target === els.overlay) closeModal(); };
   }
 
   function openConfirm(idea, choice) {
@@ -836,6 +908,7 @@
   els.refresh.addEventListener("click", load);
   els.submit.addEventListener("click", openSubmit);
   els.newIdea.addEventListener("click", openIntake);
+  els.runDesign.addEventListener("click", openRunDesign);
 
   load();
 })();
