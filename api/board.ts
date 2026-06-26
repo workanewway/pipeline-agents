@@ -7,7 +7,7 @@ import { google } from 'googleapis';
 export const maxDuration = 30;
 
 const TAB = 'Queue';
-const RANGE = `${TAB}!A1:AB100000`;
+const RANGE = `${TAB}!A1:AZ100000`;
 
 // Normalize a header cell to a stable key.
 const norm = (s: string) =>
@@ -34,6 +34,8 @@ const FIELD_MAP: Record<string, string> = {
   prod_url: 'prodUrl',
   pr_commit: 'prCommit',
   blocked_reason: 'blockedReason',
+  migration_files: 'migrationFiles',
+  pending_migration: 'pendingMigration',
   created_at: 'createdAt',
   updated_at: 'updatedAt',
 };
