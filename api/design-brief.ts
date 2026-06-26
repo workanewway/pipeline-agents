@@ -2,6 +2,11 @@
  * api/design-brief.ts  ->  GET/POST /api/design-brief
  * Promotes top-priority "Captured" ideas (and re-does any "Designing" rows the watcher
  * sent back with feedback) into a Design Brief + Build Sequence, then moves them to "In Review".
+ *
+ * Input-aware: if the Captured idea ALREADY carries a Design Brief / Build Sequence
+ * (e.g. a fully-baked idea added through intake), design-brief switches from "generate
+ * from scratch" to "refine + verify + preserve" — it builds on the submitted spec rather
+ * than overwriting it. Both modes run a functional-slice + scope/brand-lock check.
  */
 
 import type { VercelRequest, VercelResponse } from "@vercel/node";
@@ -21,9 +26,25 @@ const sheets = getSheets();
 
 interface Brief { designBrief: string; buildSequence: string; }
 
+// The review every brief must pass, in either mode. Surfaced in the brief text for now;
+// dependency-card generation is a separate follow-on.
+const SLICE_AND_SCOPE_CHECK = `BEFORE finalizing, run these checks and reflect them in the DESIGN BRIEF:
+- FUNCTIONAL SLICE: State plainly whether this ships as an independently usable capability or as
+  foundation that depends on something not yet built. If it depends on unbuilt work to function,
+  name that dependency explicitly and label this brief "ships as foundation (blocked by: <dep>)".
+  Do not silently scope a feature down to a non-working half.
+- SCOPE / BRAND LOCKS: If the idea carries scope decisions or forbids a product/brand/codename,
+  verify the brief and build sequence honor them. Flag any violation explicitly rather than
+  passing it through.`;
+
 async function generate(project: Project, row: QueueRow): Promise<Brief | null> {
   const feedback = row.get("Review Feedback");
   const isRedo = row.get("Stage") === "Designing" && !!feedback;
+
+  // Refine mode when the idea already carries a brief or build sequence.
+  const submittedBrief = (row.get("Design Brief") || "").trim();
+  const submittedSequence = (row.get("Build Sequence") || "").trim();
+  const isRefine = !!(submittedBrief || submittedSequence);
 
   const brandGuidance =
     project.kind === "product"
@@ -35,13 +56,21 @@ async function generate(project: Project, row: QueueRow): Promise<Brief | null> 
       ? "Deploy policy is DESIGN-ONLY: the build sequence is a spec a human developer will execute against the client's own infrastructure. Write it as clear hand-off steps, not instructions for an autonomous agent."
       : "The build sequence will drive an autonomous Claude Code session that builds to preview/staging first. Write concrete, ordered, executable steps.";
 
-  const system = `You are a senior product designer + tech lead for this project.
+  // The task framing forks on mode; everything else (model, parse, shape) stays identical.
+  const task = isRefine
+    ? `You are REFINING a submitted spec, not writing one from scratch. The author has already
+provided a Design Brief and/or Build Sequence below. PRESERVE their intent, structure, and
+specifics. Do NOT rewrite it into something different, do NOT thin it down, do NOT reorder for
+taste. Only: tighten genuinely unclear wording, fill clear gaps, ensure it follows this project's
+conventions, and run the checks below. If the submitted spec is already sound, return it
+essentially unchanged. Output the refined Design Brief and Build Sequence.
 
-${project.context}
+SUBMITTED DESIGN BRIEF:
+${submittedBrief || "(none provided — derive a brief consistent with the submitted build sequence)"}
 
-${AI_NATIVE_DIRECTIVE}
-
-Produce two things for the idea below:
+SUBMITTED BUILD SEQUENCE:
+${submittedSequence || "(none provided — derive one consistent with the submitted brief)"}`
+    : `Produce two things for the idea below, generating them from the idea's substance:
 
 1. DESIGN BRIEF - ready for Claude Design. Center it on the AI-NATIVE INTERACTION: the primary
    surface should be conversational/agentic, not a form-and-dashboard, consistent with the idea's
@@ -50,7 +79,19 @@ Produce two things for the idea below:
    styling direction. ${brandGuidance}
 
 2. BUILD SEQUENCE - ordered steps. Build the AI/agent core FIRST, then scaffolding (storage, auth,
-   integrations, deploy). Call out any conventional-code fallback and why. ${deployGuidance}
+   integrations, deploy). Call out any conventional-code fallback and why. ${deployGuidance}`;
+
+  const system = `You are a senior product designer + tech lead for this project.
+
+${project.context}
+
+${AI_NATIVE_DIRECTIVE}
+
+${task}
+
+${isRefine ? `Conventions to enforce while refining: ${brandGuidance} ${deployGuidance}` : ""}
+
+${SLICE_AND_SCOPE_CHECK}
 
 ${isRedo ? `THIS IS A REVISION. Wayne sent it back with this feedback:
 "${feedback}"
