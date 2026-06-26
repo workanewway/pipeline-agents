@@ -156,6 +156,8 @@
     background: #fff; border: 1px solid rgba(49,130,206,.45); border-radius: 7px; padding: 4px 9px; cursor: pointer;
   }
   .decide:hover { background: #f0f6fd; }
+  .promote { margin-left: auto; font-family: var(--sans); font-size: 11px; font-weight: 700; color: #fff; background: var(--green); border: 0; border-radius: 7px; padding: 5px 11px; cursor: pointer; }
+  .promote:hover { background: #38a169; }
   .blocked-note { margin-top: 7px; font-size: 10.5px; color: #b23030; background: rgba(229,62,62,.07); border-radius: 6px; padding: 5px 7px; line-height: 1.35; }
 
   /* ── States ────────────────────────────────────────────── */
@@ -392,6 +394,11 @@
       var btn = el("button", "decide no-nav", "Decide \u25BE");
       btn.addEventListener("click", function (e) { e.stopPropagation(); openMenu(idea, opts); });
       foot.appendChild(btn);
+    }
+    if ((idea.stage || "") === "Ready to Promote") {
+      var pb = el("button", "promote no-nav", "Promote \u2192");
+      pb.addEventListener("click", function (e) { e.stopPropagation(); openPromoteConfirm(idea); });
+      foot.appendChild(pb);
     }
     card.appendChild(foot);
     return card;
@@ -899,6 +906,44 @@
         closeModal();
         load();
         showToast(res.j.ideaId + " added to Captured \u00B7 " + res.j.product);
+      })
+      .catch(function (e) { go.disabled = false; go.textContent = "Try again"; errLine.textContent = e.message; });
+  }
+
+  // ── Promote (staging -> main -> production) ──────────────────────────
+  function openPromoteConfirm(idea) {
+    var m = shell(idea);
+    m.appendChild(el("h3", null, "Promote " + idea.id + " to production?"));
+    m.appendChild(el("p", "m-sub", idea.title || ""));
+    m.appendChild(warn("red", "<strong>This merges staging \u2192 main and deploys to PRODUCTION.</strong> Read the diff before confirming \u2014 this is the live system."));
+
+    var diff = el("div", "m-warn blue");
+    var a = document.createElement("a");
+    a.href = "https://github.com/workanewway/vetting-platform-api/compare/main...staging";
+    a.target = "_blank"; a.rel = "noopener"; a.textContent = "Open the staging \u2192 main diff \u2197";
+    a.style.color = "#245a8a"; a.style.fontWeight = "700"; a.style.textDecoration = "none";
+    diff.appendChild(a);
+    m.appendChild(diff);
+
+    m.appendChild(warn("amber", "Ships <strong>code only</strong>. If this build added a DB migration (supabase/), run it on prod Supabase after promoting \u2014 Promote does not run migrations."));
+
+    var errLine = el("p", "m-err", ""); m.appendChild(errLine);
+    var actions = el("div", "m-actions");
+    var cancel = el("button", "btn", "Cancel"); cancel.addEventListener("click", closeModal); actions.appendChild(cancel);
+    var go = el("button", "btn primary go", "Promote to production");
+    go.addEventListener("click", function () { runPromote(idea.id, go, errLine); });
+    actions.appendChild(go);
+    m.appendChild(actions);
+  }
+
+  function runPromote(id, go, errLine) {
+    go.disabled = true; go.textContent = "Promoting\u2026"; errLine.textContent = "";
+    fetch(api("/api/promote?id=" + encodeURIComponent(id)), { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" })
+      .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+      .then(function (res) {
+        if (!res.ok || !res.j || res.j.ok === false) throw new Error((res.j && res.j.error) || "Promote failed");
+        closeModal(); load();
+        showToast(id + (res.j.merged ? " promoted \u2192 production deploying" : " \u2014 main already up to date") + (res.j.warning ? " (" + res.j.warning + ")" : ""));
       })
       .catch(function (e) { go.disabled = false; go.textContent = "Try again"; errLine.textContent = e.message; });
   }
