@@ -137,13 +137,23 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     const { rows } = await readQueue(sheets);
 
-    const redos = rows.filter((r) => r.get("Stage") === "Designing" && r.get("Review Feedback"));
-    const fresh = rows
-      .filter((r) => r.get("Stage") === "Captured" && Number(r.get("Priority Score")) >= PRIORITY_THRESHOLD)
-      .sort((a, b) => Number(b.get("Priority Score")) - Number(a.get("Priority Score")))
-      .slice(0, MAX_NEW_PER_RUN);
+    // Targeted design: ?id=IDEA-XXXX (or body.id) designs exactly that idea, bypassing
+    // the priority threshold — used by the Foundry's per-card "Send to Design".
+    const targetId = (req.query.id || (req.body && (req.body as any).id) || "").toString().trim();
 
-    const targets = [...redos, ...fresh];
+    let targets: QueueRow[];
+    if (targetId) {
+      const row = rows.find((r) => r.get("Idea ID") === targetId);
+      targets = row ? [row] : [];
+    } else {
+      const redos = rows.filter((r) => r.get("Stage") === "Designing" && r.get("Review Feedback"));
+      const fresh = rows
+        .filter((r) => r.get("Stage") === "Captured" && Number(r.get("Priority Score")) >= PRIORITY_THRESHOLD)
+        .sort((a, b) => Number(b.get("Priority Score")) - Number(a.get("Priority Score")))
+        .slice(0, MAX_NEW_PER_RUN);
+      targets = [...redos, ...fresh];
+    }
+
     const designed: string[] = [];
 
     for (const row of targets) {
