@@ -32,6 +32,10 @@
   .chip{font-size:11px;color:var(--ink-dim);border:1px solid var(--line);border-radius:999px;
     padding:3px 9px;white-space:nowrap}
   .chip.stage{color:var(--ink);border-color:var(--signal)}
+  .back{font-size:13px;color:var(--ink-dim);text-decoration:none;border:1px solid var(--line);
+    border-radius:8px;padding:5px 11px;white-space:nowrap;display:inline-flex;align-items:center;
+    gap:5px;flex:none}
+  .back:hover{border-color:var(--ink-faint);color:var(--ink)}
 
   /* split */
   main{flex:1;display:grid;grid-template-columns:1fr 1fr;min-height:0}
@@ -78,6 +82,14 @@
   .ghost:hover{border-color:var(--ink-faint);color:var(--ink)}
   .primary{background:var(--ok);color:#04210f}
   .primary:disabled{opacity:.4;cursor:default}
+  .run-design{background:var(--signal);color:#1a1205;font-family:var(--sans);font-size:13px;
+    font-weight:600;border:none;border-radius:9px;padding:10px 16px;cursor:pointer;white-space:nowrap}
+  .run-design:disabled{opacity:.5;cursor:default}
+  .edit{display:block;width:100%;min-height:52px;background:var(--panel);border:1px solid var(--line);
+    border-radius:8px;color:var(--ink);font-family:var(--sans);font-size:13.5px;line-height:1.55;
+    padding:12px 14px;resize:none;outline:none;overflow:hidden;white-space:pre-wrap}
+  .edit:focus{border-color:var(--ink-faint)}
+  .edit.oqedit{background:var(--panel-2);border-left:2px solid var(--signal);border-radius:0 8px 8px 0}
   .hint{font-size:11.5px;color:var(--ink-faint);flex:1}
   .err{color:#fca5a5;font-size:12px;padding:0 18px 10px}
 
@@ -93,6 +105,7 @@
 </head>
 <body>
   <header>
+    <a class="back" id="back" href="/" title="Back to the board">‹ Board</a>
     <span class="id" id="ideaId">—</span>
     <h1 id="title">Loading…</h1>
     <span class="chip" id="product"></span>
@@ -178,14 +191,9 @@ async function load(){
 // description column. Reuses the existing tokens/classes so it reads as the same
 // product. Only shows blocks that actually have content.
 function renderReadOnly(idea){
-  const linkify = s => esc(s).replace(/(https?:\/\/[^\s]+)/g,
-    '<a href="$1" target="_blank" rel="noopener" style="color:var(--ok)">$1</a>');
-  const block = (h, inner) => inner ? `<div class="block"><h2>${h}</h2>${inner}</div>` : '';
-
-  const desc     = (idea.reasoning || idea.description || '').trim();
-  const source   = (idea.source || '').trim();
-  const score    = (idea.priorityScore || idea.score || '').toString().trim();
-  const evidence = (idea.evidence || idea.sources || '').trim();
+  const desc     = (idea.reasoning || '').trim();
+  const aiNative = (idea.aiNative || '').trim();
+  const score    = (idea.priority || '').toString().trim();
   const oq       = (idea.openQuestions || '').trim();
   const stage    = idea.stage || 'Captured';
 
@@ -193,28 +201,94 @@ function renderReadOnly(idea){
   main.style.gridTemplateColumns = '1fr';   // collapse the split
   main.innerHTML = `
     <section class="col">
-      <div class="col-head"><span>The idea</span><span class="chip">read-only · not yet in design</span></div>
+      <div class="col-head"><span>The idea</span><span class="chip" id="editState">editable · not yet in design</span></div>
       <div class="col-body">
         <div style="max-width:760px;margin:0 auto">
-          ${ (source||score) ? `<div class="ro-meta">
-              ${source?`<div><label>Source</label><div class="v">${esc(source)}</div></div>`:''}
-              ${score ?`<div><label>Priority</label><div class="v">${esc(score)}</div></div>`:''}
+          ${ score ? `<div class="ro-meta">
+              <div><label>Priority</label><div class="v">${esc(score)}</div></div>
             </div>` : '' }
-          ${ block('Description', `<div class="prose" style="color:var(--ink)">${
-              desc ? esc(desc) : '<span style="color:var(--ink-faint)">No description text was returned for this idea.</span>'
-            }</div>`) }
-          ${ block('Evidence / sources', evidence ? `<div class="prose">${linkify(evidence)}</div>` : '') }
-          ${ block('Open questions', oq ? `<div class="oq">${esc(oq)}</div>` : '') }
           <div class="block">
-            <div class="prose" style="color:var(--ink-faint)">
-              Still at <b style="color:var(--ink-dim)">${esc(stage)}</b>. These get worked through once it
-              reaches design — run design on this idea (board → <b>Run design</b>) to generate a brief,
-              and this screen becomes the resolve workspace.
-            </div>
+            <h2>Description</h2>
+            <textarea class="edit" id="editDesc" placeholder="Describe the idea…">${esc(desc)}</textarea>
+          </div>
+          <div class="block">
+            <h2>AI-native approach</h2>
+            <textarea class="edit" id="editAi" placeholder="How is this AI-native? (this feeds the design brief)">${esc(aiNative)}</textarea>
+          </div>
+          <div class="block">
+            <h2>Open questions</h2>
+            <textarea class="edit oqedit" id="editOq" placeholder="Anything to resolve in design…">${esc(oq)}</textarea>
+          </div>
+          <div class="block" style="display:flex;align-items:center;gap:12px;margin-top:28px;
+               padding-top:18px;border-top:1px solid var(--line)">
+            <button class="ghost" id="saveEdits" disabled>Save changes</button>
+            <button class="run-design" id="runDesign">Run design on this idea →</button>
+            <span class="prose" id="runHint" style="margin:0;flex:1;color:var(--ink-faint)">
+              Edit above, then run design — changes are saved first so the brief reflects them.
+            </span>
           </div>
         </div>
       </div>
     </section>`;
+
+  // Editable pre-design view: track changes to description + open questions, save
+  // them to the queue, and (when running design) save first so the brief is built
+  // from the latest text. Reload after design so the gate flips into the workspace.
+  const editDesc  = document.getElementById('editDesc');
+  const editAi    = document.getElementById('editAi');
+  const editOq    = document.getElementById('editOq');
+  const saveBtn   = document.getElementById('saveEdits');
+  const runBtn    = document.getElementById('runDesign');
+  const hint      = document.getElementById('runHint');
+  const stateChip = document.getElementById('editState');
+
+  let saved = { reasoning: desc, aiNative: aiNative, openQuestions: oq };   // last-saved values
+
+  const grow = el => { el.style.height='auto'; el.style.height = el.scrollHeight + 'px'; };
+  const isDirty = () =>
+    editDesc.value.trim() !== saved.reasoning ||
+    editAi.value.trim()   !== saved.aiNative   ||
+    editOq.value.trim()   !== saved.openQuestions;
+  const refresh = () => {
+    saveBtn.disabled = !isDirty();
+    if(stateChip) stateChip.textContent = isDirty() ? 'unsaved changes' : 'editable · not yet in design';
+  };
+  [editDesc, editAi, editOq].forEach(el => { grow(el); el.addEventListener('input', ()=>{ grow(el); refresh(); }); });
+
+  async function saveEdits(){
+    if(!isDirty()) return;
+    const body = { id: idea.ideaId, reasoning: editDesc.value.trim(), aiNative: editAi.value.trim(), openQuestions: editOq.value.trim() };
+    const r = await fetch('/api/idea',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const j = await r.json();
+    if(!j.ok) throw new Error(j.error||'save failed');
+    saved = { reasoning: body.reasoning, aiNative: body.aiNative, openQuestions: body.openQuestions };
+    idea.reasoning = body.reasoning; idea.aiNative = body.aiNative; idea.openQuestions = body.openQuestions;
+    refresh();
+  }
+
+  saveBtn.addEventListener('click', async ()=>{
+    saveBtn.disabled = true;
+    if(hint){ hint.style.color='var(--ink-faint)'; hint.textContent='Saving…'; }
+    try{ await saveEdits(); if(hint) hint.textContent='Saved ✓'; }
+    catch(e){ saveBtn.disabled=false; if(hint){ hint.style.color='#fca5a5'; hint.textContent=e.message; } }
+  });
+
+  runBtn.addEventListener('click', async ()=>{
+    runBtn.disabled = true; saveBtn.disabled = true;
+    if(hint) hint.style.color='var(--ink-faint)';
+    try{
+      if(isDirty()){ if(hint) hint.textContent='Saving your changes…'; await saveEdits(); }
+      if(hint) hint.textContent='Running design… this can take a few seconds.';
+      const r = await fetch('/api/design-brief',{method:'POST',headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ id: idea.ideaId })});
+      const j = await r.json();
+      if(!j.ok) throw new Error(j.error||'design-brief failed');
+      location.reload();
+    }catch(e){
+      runBtn.disabled=false; refresh();
+      if(hint){ hint.style.color='#fca5a5'; hint.textContent=e.message; }
+    }
+  });
 }
 
 function showErr(m){ const e=$('err'); e.style.display='block'; e.textContent=m; }
@@ -305,6 +379,14 @@ async function save(){
 $('send').onclick = send;
 $('rewrite').onclick = rewrite;
 $('save').onclick = save;
+
+// Exit to the board. If we arrived from a same-origin page (the board), go back so
+// its filters and scroll survive. Otherwise let the href load the board fresh.
+$('back').addEventListener('click', e=>{
+  let cameFromBoard = false;
+  try{ cameFromBoard = document.referrer && new URL(document.referrer).origin === location.origin; }catch{}
+  if(cameFromBoard && history.length > 1){ e.preventDefault(); history.back(); }
+});
 $('input').addEventListener('keydown', e=>{ if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); send(); }});
 $('input').addEventListener('input', e=>{ e.target.style.height='auto'; e.target.style.height=Math.min(e.target.scrollHeight,140)+'px'; });
 load();
