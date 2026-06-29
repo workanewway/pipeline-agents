@@ -68,8 +68,11 @@ provided a Design Brief and/or Build Sequence below. PRESERVE their intent, stru
 specifics. Do NOT rewrite it into something different, do NOT thin it down, do NOT reorder for
 taste. Only: tighten genuinely unclear wording, fill clear gaps, ensure it follows this project's
 conventions, and run the checks below. If the submitted spec is already sound, return it
-essentially unchanged. Output the refined Design Brief and Build Sequence, plus any genuinely-open
-design/implementation forks that remain as OPEN QUESTIONS (do not re-open or expand scope).
+essentially unchanged. Output the refined Design Brief and Build Sequence, plus — as OPEN QUESTIONS
+— only genuine DECISION forks that need the human's judgment (more than one acceptable answer the
+codebase can't settle). Do NOT surface LOOKUP questions answerable by reading the repo (which file,
+which selector, is there a variant); fold those into the build sequence as inspect-and-handle steps
+instead. Do not re-open or expand scope. An empty string is correct if the only unknowns are lookups.
 
 SUBMITTED DESIGN BRIEF:
 ${submittedBrief || "(none provided — derive a brief consistent with the submitted build sequence)"}
@@ -87,11 +90,29 @@ ${submittedSequence || "(none provided — derive one consistent with the submit
 2. BUILD SEQUENCE - ordered steps. Build the AI/agent core FIRST, then scaffolding (storage, auth,
    integrations, deploy). Call out any conventional-code fallback and why. ${deployGuidance}
 
-3. OPEN QUESTIONS - the design/implementation questions that remain open WITHIN this idea's locked
-   scope: the genuine forks a human should decide before or during the build (which control, which
-   value, which behavior at an edge). Form them strictly from the scope as given. Do NOT question
-   whether the feature should exist, and do NOT propose a larger or different scope — scope is
-   decided upstream and is fixed. If nothing is genuinely open, return an empty string.`;
+3. OPEN QUESTIONS - surface ONLY decision questions, never lookup questions. The difference:
+
+   - A DECISION question has more than one acceptable answer that the codebase CANNOT settle —
+     it needs the human's scope, taste, or judgment (e.g. "delete these, or replace them with a
+     contextual version?", "cap the height or let it grow unbounded?", "which of two UX behaviors
+     at this edge?"). These are the ONLY things that belong in OPEN QUESTIONS.
+
+   - A LOOKUP question has a single correct answer that is discoverable by simply reading the
+     repository ("is it a hardcoded array or a separate JS file?", "does this container also wrap
+     other elements?", "is there a mobile/responsive variant?", "where is the click handler
+     defined?"). The build agent reads the real files and WILL answer these by construction.
+     NEVER put a lookup in OPEN QUESTIONS — asking the human to hand-resolve something the build
+     step observes for free is pure friction.
+
+   Instead, fold every lookup INTO THE BUILD SEQUENCE as a conditional "inspect-and-handle" step,
+   so the build agent resolves it against the actual code. Example: not "Open question: does the
+   chip container wrap other elements?" but "Build step: inspect the chip container — if it wraps
+   only chips, remove it; if it also holds other dock elements, remove only the chip children."
+
+   Form decision questions strictly from the locked scope. Do NOT question whether the feature
+   should exist, and do NOT propose a larger or different scope. If there are no genuine decision
+   questions — which is common for a well-scoped change — return an empty string. An empty string
+   is the correct, expected answer when the only unknowns are lookups.`;
 
   const system = `You are a senior product designer + tech lead for this project.
 
