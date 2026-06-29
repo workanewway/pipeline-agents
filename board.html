@@ -69,6 +69,28 @@
     cursor: pointer; user-select: none; padding: 4px 6px; border-radius: 6px;
   }
   .toggle input { accent-color: var(--action); }
+
+  /* Auto-research switch — a SETTING (arms the daily agent), visually distinct from
+     the view filters above. Green when on. Separated by a divider on its left. */
+  .rtoggle {
+    display: inline-flex; align-items: center; gap: 7px; cursor: pointer; user-select: none;
+    padding: 3px 4px 3px 12px; margin-left: 2px; border-left: 1px solid var(--line);
+  }
+  .rtoggle .rt-label { font-size: 12px; font-weight: 600; color: var(--ink-soft); letter-spacing: .01em; white-space: nowrap; }
+  .rtoggle.on .rt-label { color: #277a4b; }
+  .rtoggle.loading { opacity: .55; cursor: default; }
+  .rt-switch { position: relative; width: 34px; height: 18px; flex: none; }
+  .rt-switch input { position: absolute; opacity: 0; width: 100%; height: 100%; margin: 0; cursor: pointer; }
+  .rt-slider { position: absolute; inset: 0; background: #cbd5e1; border-radius: 20px; transition: background .15s ease; }
+  .rt-slider::before {
+    content: ""; position: absolute; left: 2px; top: 2px; width: 14px; height: 14px;
+    background: #fff; border-radius: 50%; box-shadow: 0 1px 2px rgba(20,33,51,.3); transition: transform .15s ease;
+  }
+  .rt-switch input:checked + .rt-slider { background: var(--green); }
+  .rt-switch input:checked + .rt-slider::before { transform: translateX(16px); }
+  .rt-switch input:focus-visible + .rt-slider { outline: 2px solid var(--action); outline-offset: 2px; }
+  .rt-switch input:disabled { cursor: default; }
+
   button.ghost {
     font-family: var(--sans); font-size: 13px; font-weight: 550; color: var(--ink-soft); background: #fff;
     border: 1px solid var(--line); border-radius: 8px; height: 32px; padding: 0 13px; cursor: pointer;
@@ -254,6 +276,10 @@
       <select id="fSource" aria-label="Filter by source"><option value="">All sources</option></select>
       <label class="toggle"><input type="checkbox" id="hideEmpty" checked /> Hide empty</label>
       <label class="toggle"><input type="checkbox" id="showClosed" checked /> Show closed</label>
+      <label class="rtoggle loading" id="researchToggle" title="Auto-research for Broker Platform — when on, the daily agent proposes new ideas for this project. Off by default.">
+        <span class="rt-label">Auto-research</span>
+        <span class="rt-switch"><input type="checkbox" id="researchEnabled" disabled aria-label="Auto-research for Broker Platform" /><span class="rt-slider"></span></span>
+      </label>
       <span class="stamp" id="stamp"></span>
       <button class="ghost" id="runDesign">Run design</button>
       <button class="ghost" id="refresh">Refresh</button>
@@ -282,6 +308,10 @@
   // pattern doesn't catch — widen SCOPE_MATCH (one line) and redeploy.
   var SCOPE_MATCH = /broker|vetting|carrier/i;
   function inScope(idea) { return SCOPE_MATCH.test(idea.product || ""); }
+
+  // The project this board governs — must match the project name in PROJECTS
+  // (pipeline-common) exactly, since the research toggle keys off it.
+  var PROJECT = "Broker Platform";
 
   var PHASES = [
     { name: "Intake", tint: "#64748b", stages: ["Captured", "Enriching"] },
@@ -323,7 +353,9 @@
     toast: document.getElementById("toast"),
     submit: document.getElementById("submit"),
     newIdea: document.getElementById("newIdea"),
-    runDesign: document.getElementById("runDesign")
+    runDesign: document.getElementById("runDesign"),
+    researchToggle: document.getElementById("researchToggle"),
+    researchEnabled: document.getElementById("researchEnabled")
   };
 
   var ALL = [];
@@ -602,6 +634,54 @@
     requestAnimationFrame(function () { els.toast.classList.add("show"); });
     clearTimeout(toastTimer);
     toastTimer = setTimeout(function () { els.toast.classList.remove("show"); setTimeout(function () { els.toast.hidden = true; }, 250); }, 3200);
+  }
+
+  // ── Auto-research toggle (per project, default off) ──────────────────
+  function syncResearchUI(enabled) {
+    els.researchEnabled.checked = !!enabled;
+    els.researchToggle.classList.toggle("on", !!enabled);
+  }
+
+  function loadResearchToggle() {
+    els.researchToggle.classList.add("loading");
+    els.researchEnabled.disabled = true;
+    fetch(api("/api/research-config"), { cache: "no-store" })
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        if (!j || j.ok === false || !j.projects) throw new Error((j && j.error) || "config load failed");
+        var me = j.projects.filter(function (p) { return p.name === PROJECT; })[0];
+        syncResearchUI(me && me.enabled);
+        els.researchToggle.classList.remove("loading");
+        els.researchEnabled.disabled = false;
+      })
+      .catch(function () {
+        // Non-fatal: leave the switch off-looking + disabled, note why on hover.
+        els.researchToggle.classList.remove("loading");
+        els.researchToggle.title = "Auto-research toggle unavailable — /api/research-config didn't respond";
+      });
+  }
+
+  function onResearchToggle() {
+    var want = els.researchEnabled.checked;
+    els.researchEnabled.disabled = true;
+    els.researchToggle.classList.toggle("on", want);
+    fetch(api("/api/research-config"), {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ project: PROJECT, enabled: want })
+    })
+      .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+      .then(function (res) {
+        if (!res.ok || !res.j || res.j.ok === false) throw new Error((res.j && res.j.error) || "save failed");
+        els.researchEnabled.disabled = false;
+        showToast(want
+          ? "Auto-research ON for " + PROJECT + " \u00B7 the daily agent will propose ideas"
+          : "Auto-research OFF for " + PROJECT);
+      })
+      .catch(function (e) {
+        syncResearchUI(!want); // revert the optimistic flip
+        els.researchEnabled.disabled = false;
+        showToast("Couldn't change auto-research: " + e.message);
+      });
   }
 
   // ── Filters + render ─────────────────────────────────────────────────
@@ -998,8 +1078,10 @@
   els.submit.addEventListener("click", openSubmit);
   els.newIdea.addEventListener("click", openIntake);
   els.runDesign.addEventListener("click", openRunDesign);
+  els.researchEnabled.addEventListener("change", onResearchToggle);
 
   load();
+  loadResearchToggle();
 })();
 </script>
 </body>
