@@ -15,6 +15,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import {
   PROJECTS, AI_NATIVE_DIRECTIVE, Project, cronAuthorized,
   getSheets, readQueue, newRow, setCell, SHEET_ID, TAB, DEFAULT_MODEL,
+  readResearchEnabled,
 } from "../lib/pipeline-common.js";
 export const maxDuration = 60;
 
@@ -144,11 +145,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const now = new Date().toISOString();
   try {
     const { titlesByProduct, nextNum } = await existingByProject();
+    const enabled = await readResearchEnabled(sheets);
     let n = nextNum;
     const rows: string[][] = [];
     const summary: Record<string, number> = {};
+    const skipped: string[] = [];
 
     for (const project of PROJECTS) {
+      // Per-project toggle (Config tab). Default OFF — research is opt-in.
+      if (enabled.get(project.name) !== true) {
+        skipped.push(project.name);
+        continue;
+      }
       const existing = titlesByProduct.get(project.name) ?? [];
       const candidates = await research(project, existing);
       const fresh = dedupe(candidates, existing);
@@ -167,7 +175,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
     }
 
-    return res.status(200).json({ ok: true, created: rows.length, perProject: summary });
+    return res.status(200).json({ ok: true, created: rows.length, perProject: summary, skipped });
   } catch (err: any) {
     console.error("[research] failed:", err);
     return res.status(500).json({ ok: false, error: String(err?.message || err) });
