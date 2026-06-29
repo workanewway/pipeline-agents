@@ -7,6 +7,11 @@
  * (e.g. a fully-baked idea added through intake), design-brief switches from "generate
  * from scratch" to "refine + verify + preserve" — it builds on the submitted spec rather
  * than overwriting it. Both modes run a functional-slice + scope/brand-lock check.
+ *
+ * Auth: the BULK sweep (no id) is cron-only. A TARGETED call (?id= / body.id) is an
+ * explicit per-card action from the Foundry UI and is allowed without the cron secret,
+ * consistent with the other browser endpoints (idea, design-chat). It designs exactly
+ * that one row and bypasses the priority threshold.
  */
 
 import type { VercelRequest, VercelResponse } from "@vercel/node";
@@ -131,15 +136,20 @@ Open Questions: ${row.get("Open Questions")}`;
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  if (!cronAuthorized(req.headers.authorization)) return res.status(401).json({ error: "unauthorized" });
-
   const now = new Date().toISOString();
+
+  // Targeted design: ?id=IDEA-XXXX (or body.id) designs exactly that idea, bypassing
+  // the priority threshold — used by the Foundry's per-card "Run design on this idea".
+  const targetId = (req.query.id || (req.body && (req.body as any).id) || "").toString().trim();
+
+  // Bulk sweeps stay cron-only; targeted single-idea calls are an explicit UI action
+  // and are allowed through (same open posture as idea/design-chat).
+  if (!targetId && !cronAuthorized(req.headers.authorization)) {
+    return res.status(401).json({ error: "unauthorized" });
+  }
+
   try {
     const { rows } = await readQueue(sheets);
-
-    // Targeted design: ?id=IDEA-XXXX (or body.id) designs exactly that idea, bypassing
-    // the priority threshold — used by the Foundry's per-card "Send to Design".
-    const targetId = (req.query.id || (req.body && (req.body as any).id) || "").toString().trim();
 
     let targets: QueueRow[];
     if (targetId) {
@@ -152,6 +162,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         .sort((a, b) => Number(b.get("Priority Score")) - Number(a.get("Priority Score")))
         .slice(0, MAX_NEW_PER_RUN);
       targets = [...redos, ...fresh];
+    }
+
+    // A targeted id that matched nothing is a clear 404 rather than a silent no-op.
+    if (targetId && targets.length === 0) {
+      return res.status(404).json({ ok: false, error: `no idea ${targetId}` });
     }
 
     const designed: string[] = [];
