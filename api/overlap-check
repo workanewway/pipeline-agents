@@ -1,0 +1,134 @@
+// api/overlap-check.ts
+//
+// Pre-enrich overlap gate for the Pipeline Queue intake.
+// When a new idea is submitted (the "Enrich →" button), the frontend calls this
+// FIRST. It compares the new idea against existing queue rows and returns any that
+// substantially overlap, so you can decide: add anyway, or skip the duplicate.
+//
+// Self-contained — needs only env vars already set on pipeline-agents:
+//   GOOGLE_SERVICE_ACCOUNT_KEY, SHEET_ID, ANTHROPIC_API_KEY
+//
+// Handler is written as a plain Vercel function so it works regardless of
+// pipeline-agents' handler conventions. If pipeline-agents uses a withHandler
+// wrapper like vetting-platform-api does, wrap the default export to match.
+
+import { google } from 'googleapis';
+
+// --- Sheet layout (0-indexed columns; adjust if your Queue columns differ) ----
+const SHEET_TAB = 'Queue';
+const COL = { id: 0, title: 1, stage: 2, reasoning: 7 }; // A=id, B=title, C=stage, H=reasoning
+const RANGE = `${SHEET_TAB}!A2:H`; // A2 skips the header row
+
+// --- Tunables -----------------------------------------------------------------
+const OVERLAP_MODEL = 'claude-haiku-4-5-20251001'; // cheap; fine for hundreds of ideas
+const SURFACE_THRESHOLD = 60;        // only surface matches at/above this confidence
+const MAX_MATCHES = 3;
+const EXCLUDE_STAGES = ['Closed'];   // keep Declined — a dup of a declined idea is worth knowing
+
+type Idea = { id: string; title: string; stage: string; reasoning: string };
+type Match = { id: string; title: string; stage: string; score: number; why: string };
+
+async function readIdeas(): Promise<Idea[]> {
+  const creds = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_KEY as string);
+  const auth = new google.auth.JWT({
+    email: creds.client_email,
+    key: creds.private_key,
+    scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'],
+  });
+  const sheets = google.sheets({ version: 'v4', auth });
+  const res = await sheets.spreadsheets.values.get({
+    spreadsheetId: process.env.SHEET_ID as string,
+    range: RANGE,
+  });
+  return (res.data.values ?? [])
+    .map((r) => ({
+      id: (r[COL.id] ?? '').toString().trim(),
+      title: (r[COL.title] ?? '').toString().trim(),
+      stage: (r[COL.stage] ?? '').toString().trim(),
+      reasoning: (r[COL.reasoning] ?? '').toString().trim(),
+    }))
+    .filter((i) => i.id && i.title);
+}
+
+async function findOverlap(text: string, ideas: Idea[]): Promise<Match[]> {
+  const candidates = ideas.filter((i) => !EXCLUDE_STAGES.includes(i.stage));
+  if (candidates.length === 0) return [];
+
+  const catalog = candidates
+    .map((i) => `${i.id} | ${i.title} | ${i.reasoning.slice(0, 200)}`)
+    .join('\n');
+
+  const system =
+    'You compare a NEW product idea against an existing backlog and find ' +
+    'substantial overlaps — same problem, feature, or goal, not merely the same ' +
+    'general area. Return ONLY JSON. No prose, no markdown fences.';
+
+  const prompt =
+    `NEW IDEA:\n${text}\n\n` +
+    `EXISTING BACKLOG (id | title | reasoning):\n${catalog}\n\n` +
+    `Return a JSON array of existing ideas that substantially overlap the new idea. ` +
+    `Each item: {"id","score","why"} where score is 0-100 overlap confidence and ` +
+    `why is one short sentence. Only include score >= ${SURFACE_THRESHOLD}. ` +
+    `If none overlap, return []. Sort by score descending.`;
+
+  const r = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'x-api-key': process.env.ANTHROPIC_API_KEY as string,
+      'anthropic-version': '2023-06-01',
+    },
+    body: JSON.stringify({
+      model: OVERLAP_MODEL,
+      max_tokens: 700,
+      system,
+      messages: [{ role: 'user', content: prompt }],
+    }),
+  });
+  if (!r.ok) throw new Error(`Anthropic ${r.status}: ${await r.text()}`);
+
+  const data = await r.json();
+  const raw = (data.content ?? [])
+    .filter((b: any) => b.type === 'text')
+    .map((b: any) => b.text)
+    .join('')
+    .trim();
+
+  let parsed: any[];
+  try {
+    parsed = JSON.parse(raw.replace(/^```json\s*|\s*```$/g, ''));
+    if (!Array.isArray(parsed)) parsed = [];
+  } catch {
+    return []; // never block intake on a parse hiccup
+  }
+
+  const byId = new Map(candidates.map((i) => [i.id, i]));
+  return parsed
+    .filter((m) => m && byId.has(m.id) && Number(m.score) >= SURFACE_THRESHOLD)
+    .sort((a, b) => Number(b.score) - Number(a.score))
+    .slice(0, MAX_MATCHES)
+    .map((m) => {
+      const idea = byId.get(m.id)!;
+      return { id: idea.id, title: idea.title, stage: idea.stage, score: Number(m.score), why: String(m.why ?? '') };
+    });
+}
+
+export default async function handler(req: any, res: any) {
+  if (req.method !== 'POST') {
+    res.status(405).json({ error: 'POST only' });
+    return;
+  }
+  try {
+    const text = (req.body?.text ?? '').toString().trim();
+    if (!text) {
+      res.status(400).json({ error: 'Missing "text"' });
+      return;
+    }
+    const ideas = await readIdeas();
+    const matches = await findOverlap(text, ideas);
+    res.status(200).json({ matches, checked: ideas.length });
+  } catch (err: any) {
+    // Fail open: an overlap-check failure must never block a genuine new idea.
+    res.status(200).json({ matches: [], checked: 0, warning: err?.message ?? 'overlap-check failed' });
+  }
+}
