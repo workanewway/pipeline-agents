@@ -81,6 +81,12 @@
   .hint{font-size:11.5px;color:var(--ink-faint);flex:1}
   .err{color:#fca5a5;font-size:12px;padding:0 18px 10px}
 
+  /* read-only (pre-design) view — single column, reuses the tokens above */
+  .ro-meta{display:flex;gap:32px;margin-bottom:22px}
+  .ro-meta label{display:block;font-size:11px;letter-spacing:.1em;text-transform:uppercase;
+    color:var(--ink-faint);margin-bottom:4px}
+  .ro-meta .v{font-size:14px;color:var(--ink)}
+
   @media(max-width:860px){ main{grid-template-columns:1fr;grid-template-rows:1fr 1fr}
     .col.spec{border-right:none;border-bottom:1px solid var(--line)} }
 </style>
@@ -151,6 +157,14 @@ async function load(){
     $('title').textContent = idea.title;
     $('product').textContent = idea.product;
     $('stage').textContent = idea.stage;
+
+    // Stage-aware: a pre-design idea has no brief and no build sequence yet, so
+    // there's nothing to "resolve". Show it read-only instead of dropping into the
+    // design workspace. The moment design-brief runs (brief or sequence exists),
+    // this same screen reverts to the resolve flow below — no stage-name hardcoding.
+    const inDesign = (idea.designBrief||'').trim() || (idea.buildSequence||'').trim();
+    if(!inDesign){ renderReadOnly(idea); return; }
+
     $('openQ').textContent = idea.openQuestions || '(none recorded)';
     $('brief').textContent = idea.designBrief || '(no brief yet — run design-brief first)';
     $('seq').textContent = idea.buildSequence || '(no build sequence yet)';
@@ -158,6 +172,49 @@ async function load(){
       "Here's the spec. Let's settle the open questions before this builds. Ask me to think any of them through, push back on the brief, or tell me your call — then hit \"Rewrite spec from chat\" when we're done.",
       'them');
   }catch(e){ showErr(e.message); }
+}
+
+// Pre-design read-only view. Replaces the two-column workspace with a single
+// description column. Reuses the existing tokens/classes so it reads as the same
+// product. Only shows blocks that actually have content.
+function renderReadOnly(idea){
+  const linkify = s => esc(s).replace(/(https?:\/\/[^\s]+)/g,
+    '<a href="$1" target="_blank" rel="noopener" style="color:var(--ok)">$1</a>');
+  const block = (h, inner) => inner ? `<div class="block"><h2>${h}</h2>${inner}</div>` : '';
+
+  const desc     = (idea.reasoning || idea.description || '').trim();
+  const source   = (idea.source || '').trim();
+  const score    = (idea.priorityScore || idea.score || '').toString().trim();
+  const evidence = (idea.evidence || idea.sources || '').trim();
+  const oq       = (idea.openQuestions || '').trim();
+  const stage    = idea.stage || 'Captured';
+
+  const main = document.querySelector('main');
+  main.style.gridTemplateColumns = '1fr';   // collapse the split
+  main.innerHTML = `
+    <section class="col">
+      <div class="col-head"><span>The idea</span><span class="chip">read-only · not yet in design</span></div>
+      <div class="col-body">
+        <div style="max-width:760px;margin:0 auto">
+          ${ (source||score) ? `<div class="ro-meta">
+              ${source?`<div><label>Source</label><div class="v">${esc(source)}</div></div>`:''}
+              ${score ?`<div><label>Priority</label><div class="v">${esc(score)}</div></div>`:''}
+            </div>` : '' }
+          ${ block('Description', `<div class="prose" style="color:var(--ink)">${
+              desc ? esc(desc) : '<span style="color:var(--ink-faint)">No description text was returned for this idea.</span>'
+            }</div>`) }
+          ${ block('Evidence / sources', evidence ? `<div class="prose">${linkify(evidence)}</div>` : '') }
+          ${ block('Open questions', oq ? `<div class="oq">${esc(oq)}</div>` : '') }
+          <div class="block">
+            <div class="prose" style="color:var(--ink-faint)">
+              Still at <b style="color:var(--ink-dim)">${esc(stage)}</b>. These get worked through once it
+              reaches design — run design on this idea (board → <b>Run design</b>) to generate a brief,
+              and this screen becomes the resolve workspace.
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>`;
 }
 
 function showErr(m){ const e=$('err'); e.style.display='block'; e.textContent=m; }
