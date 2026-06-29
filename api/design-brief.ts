@@ -53,7 +53,7 @@ async function generate(project: Project, row: QueueRow): Promise<Brief | null> 
 
   const brandGuidance =
     project.kind === "product"
-      ? "Apply the product's own brand if it has one; otherwise keep it clean, modern, and trustworthy for professional buyers. Do not use NewWay Digital's brand - this is the product, not NewWay."
+      ? "This product has NO brand name — never invent or render one (no codename, no made-up name like 'FreightVet') anywhere in the brief, labels, placeholders, or copy. Keep it clean, modern, and trustworthy for professional buyers, using only the neutral styling described in the project context. Never use NewWay Digital's brand, and never surface a tenant/client name in the UI."
       : "Use the CLIENT's branding. If unknown, use neutral, professional styling. Never impose NewWay Digital's brand on client-facing work.";
 
   const deployGuidance =
