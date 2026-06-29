@@ -227,3 +227,60 @@ export async function updateCells(sheets: Sheets, rowNum: number, updates: Parti
     requestBody: { valueInputOption: "USER_ENTERED", data },
   });
 }
+
+// ---------------------------------------------------------------------------
+// Per-project research toggle.
+// Stored in a separate "Config" tab in the same spreadsheet so it can be flipped
+// from the Foundry board (or by hand) WITHOUT a code deploy. Schema:
+//   A: Project              B: Research Enabled (TRUE / FALSE)
+// Default is OFF: a project that isn't listed, or isn't set TRUE, does NOT auto-
+// research. Research is opt-in per project — fail-safe toward "don't generate".
+// ---------------------------------------------------------------------------
+export const CONFIG_TAB = process.env.SHEET_CONFIG_TAB || "Config";
+
+const isTrue = (v: any) => /^(true|yes|on|1)$/i.test(String(v ?? "").trim());
+
+export async function readResearchEnabled(sheets: Sheets): Promise<Map<string, boolean>> {
+  const map = new Map<string, boolean>();
+  try {
+    const res = await sheets.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: `${CONFIG_TAB}!A2:B1000` });
+    for (const row of res.data.values ?? []) {
+      const name = String(row[0] || "").trim();
+      if (name) map.set(name, isTrue(row[1]));
+    }
+  } catch {
+    // No Config tab yet (or unreadable) -> empty map -> everything defaults OFF.
+  }
+  return map;
+}
+
+// Upsert one project's flag. Creates the Config tab + header on first write.
+export async function setResearchEnabled(sheets: Sheets, project: string, enabled: boolean): Promise<void> {
+  try {
+    await sheets.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: `${CONFIG_TAB}!A1` });
+  } catch {
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId: SHEET_ID,
+      requestBody: { requests: [{ addSheet: { properties: { title: CONFIG_TAB } } }] },
+    });
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: SHEET_ID, range: `${CONFIG_TAB}!A1:B1`,
+      valueInputOption: "USER_ENTERED", requestBody: { values: [["Project", "Research Enabled"]] },
+    });
+  }
+  const res = await sheets.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: `${CONFIG_TAB}!A2:A1000` });
+  const names = (res.data.values ?? []).map((r) => String(r[0] || "").trim());
+  const at = names.findIndex((n) => n === project);
+  const value = enabled ? "TRUE" : "FALSE";
+  if (at >= 0) {
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: SHEET_ID, range: `${CONFIG_TAB}!B${at + 2}`,
+      valueInputOption: "USER_ENTERED", requestBody: { values: [[value]] },
+    });
+  } else {
+    await sheets.spreadsheets.values.append({
+      spreadsheetId: SHEET_ID, range: `${CONFIG_TAB}!A:B`,
+      valueInputOption: "USER_ENTERED", requestBody: { values: [[project, value]] },
+    });
+  }
+}
