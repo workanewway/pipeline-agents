@@ -304,7 +304,24 @@ function renderReadOnly(idea){
   const iShowErr = m => { iErr.style.display='block'; iErr.textContent = m; };
   const iClearErr = () => { iErr.style.display='none'; };
 
-  iAdd('them', 'Before this goes to design, let\u2019s make sure the scope is right. Is this one coherent change or a couple of things bundled together? Too big, too thin, or about right? Anything it overlaps with that\u2019s already built? I\u2019ll poke at the boundaries \u2014 push back freely. The how-to-build questions get formed at the design step, once the scope is locked \u2014 not here.');
+  // Open by asking the model for the sharpest SCOPE questions on THIS idea, rather
+  // than a canned greeting. Seeds the chat with that opening so follow-ups have context.
+  async function iOpen(){
+    const t = iAdd('them typing', 'reading the idea\u2026');
+    const seed = [{ role:'user', content:'Open the scope review: lead with the sharpest scope questions for this specific idea.' }];
+    try{
+      const r = await fetch('/api/idea-chat',{method:'POST',headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ mode:'chat', idea: curIdea(), messages: seed })});
+      const j = await r.json(); t.remove();
+      if(!j.ok) throw new Error(j.error||'open failed');
+      iAdd('them', j.text);
+      chat = seed.concat([{ role:'assistant', content:j.text }]);
+    }catch(e){
+      t.remove();
+      // Static fallback if the open call fails — still scope-framed, just not idea-specific.
+      iAdd('them', 'Before this goes to design, let\u2019s get the scope right \u2014 which surfaces does this cover, what\u2019s in vs out, one change or several, and is it solving the real problem or a symptom? Push back freely. The how-to-build questions come later, at design.');
+    }
+  }
 
   async function iChat(){
     const text = iInput.value.trim();
@@ -348,6 +365,8 @@ function renderReadOnly(idea){
   iRewrite.addEventListener('click', iDoRewrite);
   iInput.addEventListener('keydown', e => { if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); iChat(); } });
   iInput.addEventListener('input', e => { e.target.style.height='auto'; e.target.style.height = Math.min(e.target.scrollHeight,140) + 'px'; });
+
+  iOpen();   // open with this idea's scope questions, not a canned greeting
 }
 
 function showErr(m){ const e=$('err'); e.style.display='block'; e.textContent=m; }
