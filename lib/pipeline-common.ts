@@ -26,7 +26,18 @@ hand-coded deterministic logic. Default to an agentic or model-driven approach; 
 NOT using one. Do not propose a CRUD app, a rules engine, a form-and-dashboard, or a static workflow when an
 agent could do the job more flexibly. Use conventional code only for (a) scaffolding around the AI - storage,
 auth, integrations, deploy - and (b) the narrow places where determinism, exact accuracy, or cost genuinely
-demand it; when you fall back to conventional logic, state why in one line.`;
+demand it; when you fall back to conventional logic, state why in one line.
+
+SCOPE FIDELITY (overrides the bias above). Honor what the idea actually asks for. A reposition, rename,
+restyle, layout, copy, refactor, bugfix, or other maintenance change is NOT a license to introduce a new
+agent, a new data model, a new auth system, or a parallel feature. Implement it at the scope requested and
+REUSE the surfaces that already exist (see the project's architecture). If applying the AI-native bias would
+expand a small change into new subsystems, that is a signal you have over-scoped — pull back to the idea.
+
+NO ASSUMING UNBUILT INFRASTRUCTURE. Design only against capabilities the project actually has today. If a
+design would require something not yet built (e.g. per-user auth where only tenant auth exists), STOP and
+name it as an explicit dependency in the brief ("ships as foundation (blocked by: <dep>)") rather than
+silently assuming it into existence.`;
 
 export type Deploy = "one-tap" | "preview-only" | "design-only";
 
@@ -46,8 +57,33 @@ export const PROJECTS: Project[] = [
     context: `Your standalone multi-tenant SaaS for freight brokers. Produces court-ready,
 tamper-evident records of "reasonable care" in carrier selection - a compliance tool after
 Montgomery v. Caribe Transport II (May 2026) let safety-based negligent-selection claims through
-the FAAAA preemption safety exception. Stack: Supabase + Vercel (TypeScript) + Cloudflare R2 + Claude.
-Sold broadly to SMB brokers; not built for any single broker.`,
+the FAAAA preemption safety exception. Sold broadly to SMB brokers; not built for any single broker.
+
+ARCHITECTURE — design WITHIN this exact stack; do not substitute a different one.
+- Backend: serverless TypeScript functions on Vercel, one file per route under api/ in
+  github.com/workanewway/vetting-platform-api (e.g. api/vettings/[id]/assess.ts). This is NOT Next.js,
+  NOT an app/ router, NOT React Server Components. New endpoints follow the canonical apply.ts pattern:
+  handler signature (req, _res, ctx); wrap with withHandler(handler, { methods: [...] }); use
+  getSupabase() (never a bare client); throw errors.xxx() (never sendError); return plain objects
+  (never res.json()); EVERY relative import carries an explicit .js extension; long jobs set
+  "export const maxDuration". Do NOT import @anthropic-ai/sdk inside an endpoint — call the Anthropic
+  REST API with native fetch.
+- Data: Supabase (Postgres) with row-level security scoped by current_tenant_id(); Cloudflare R2 for
+  documents; FMCSA QCMobile as the authoritative carrier source. Core entities are tenant-scoped
+  (drivers, policies, verifications) plus the vettings table whose "conversation" column is POLYMORPHIC
+  (classic chat turns AND type:'file' event turns — any iterator must handle both).
+- Auth: TENANT-level only. A tenant access code (hashed in access_code_hash) yields an API key the
+  browser stores and sends on each call. There is NO per-user auth — no auth.users, no user_id
+  ownership, no cookie sessions, no createServerClient, no on_auth_user_created trigger. Per-user auth
+  is a DEFERRED roadmap item: a design MUST NOT assume it exists. Scope ownership by tenant, not user.
+- Frontend: static HTML pages on GoDaddy cPanel at workanewway.com/broker-platform/ (workspace.html,
+  connect.html, vetting.html, vettings.html), plain vanilla JS calling the API with the tenant key.
+  NO React, no Next.js, no hooks, no component framework, no Vercel AI SDK.
+
+BUILD ON WHAT EXISTS — do not reinvent it. The workspace already has an "✦ Ask AI" conversation dock
+backed by the vettings.conversation column. Ideas about that assistant must MODIFY the existing dock and
+its endpoints in place — never spec a new conversations/messages data model or a parallel chat system.
+Internal test tenants are "bivium" and "acme" (not real customers).`,
     focus: [
       "FMCSA / freight broker compliance regulation changes",
       "negligent carrier selection liability case law and broker litigation",
