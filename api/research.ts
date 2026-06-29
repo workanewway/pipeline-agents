@@ -2,6 +2,12 @@
  * api/research.ts  ->  GET/POST /api/research
  * Researches every project, writes new idea cards to the Sheet at Stage = "Captured".
  * Triggered by Vercel Cron (see vercel.json) or hit manually to test.
+ *
+ * Enrichment does NOT form design/implementation questions. Those are created later, at
+ * the design step, once the idea's SCOPE has been locked (scope check + Run design).
+ * Forming them here would presuppose a scope nobody has decided yet — the exact failure
+ * where "make the pane taller" silently became "build a resize system." The agent instead
+ * states the idea's scope plainly in its reasoning; the Open Questions column starts empty.
  */
 
 import type { VercelRequest, VercelResponse } from "@vercel/node";
@@ -25,7 +31,6 @@ interface IdeaCard {
   aiNativeApproach: string;
   priorityScore: number;
   priorityRationale: string;
-  openQuestions: string;
   sources: string;
 }
 
@@ -43,7 +48,8 @@ function rowFor(idea: IdeaCard, project: Project, ideaId: string, now: string): 
   setCell(row, "Reasoning", idea.reasoning ?? "");
   setCell(row, "AI-Native Approach", idea.aiNativeApproach ?? "");
   setCell(row, "Evidence / Sources", idea.sources ?? "");
-  setCell(row, "Open Questions", idea.openQuestions ?? "");
+  // Design questions are formed at the design step (after scope is locked), not here.
+  setCell(row, "Open Questions", "");
   setCell(row, "Repo + Target", project.repo);
   setCell(row, "Review", "Pending");
   setCell(row, "Revisions", "0");
@@ -87,12 +93,18 @@ that would move this forward. Be specific and grounded - every idea must trace t
 actually found, not speculation. Prefer a few strong ideas over many weak ones. Score priority
 0-100 on impact vs. effort, and explain the score.
 
+In "reasoning", make the idea's SCOPE clear: what the change is and, where it helps, what it does
+and does not include — one coherent change, not several bundled together. Do NOT raise design or
+implementation questions (which control to use, how to build it, whether to persist state, edge
+behaviors). Those are formed later, at the design step, once the scope has been locked. Raising
+them now would bake in a scope that has not been decided yet.
+
 These ideas already exist in the queue for this project - do NOT propose anything that overlaps:
 ${existingTitles.length ? existingTitles.map((t) => `- ${t}`).join("\n") : "(none yet)"}
 
 Output ONLY a JSON array, no prose, no markdown fences. Each element:
 { "title": string, "reasoning": string, "aiNativeApproach": string, "priorityScore": number,
-  "priorityRationale": string, "openQuestions": string, "sources": string }
+  "priorityRationale": string, "sources": string }
 Return at most ${MAX_IDEAS_PER_PROJECT} ideas.`;
 
   const user = `Research these focus areas and propose ideas:\n${project.focus.map((f) => `- ${f}`).join("\n")}`;
