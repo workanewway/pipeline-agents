@@ -187,82 +187,80 @@ async function load(){
   }catch(e){ showErr(e.message); }
 }
 
-// Pre-design read-only view. Replaces the two-column workspace with a single
-// description column. Reuses the existing tokens/classes so it reads as the same
-// product. Only shows blocks that actually have content.
+// Pre-design "scope check" view. Two panes: the idea (editable) on the left, an AI
+// chat that pressure-tests the SCOPE on the right ("do we have the scope right?" — not
+// the open questions, which are design's job). "Rewrite idea from chat" folds the
+// scope decisions back into the idea before it goes to design. Reuses the existing
+// tokens/classes so it reads as the same product.
 function renderReadOnly(idea){
-  const desc     = (idea.reasoning || '').trim();
-  const aiNative = (idea.aiNative || '').trim();
-  const score    = (idea.priority || '').toString().trim();
-  const oq       = (idea.openQuestions || '').trim();
-  const stage    = idea.stage || 'Captured';
+  const desc0     = (idea.reasoning || '').trim();
+  const aiNative0 = (idea.aiNative || '').trim();
+  const score     = (idea.priority || '').toString().trim();
 
   const main = document.querySelector('main');
-  main.style.gridTemplateColumns = '1fr';   // collapse the split
+  main.style.gridTemplateColumns = '1fr 1fr';   // idea | work-it-through chat
   main.innerHTML = `
-    <section class="col">
+    <section class="col spec">
       <div class="col-head"><span>The idea</span><span class="chip" id="editState">editable · not yet in design</span></div>
       <div class="col-body">
-        <div style="max-width:760px;margin:0 auto">
-          ${ score ? `<div class="ro-meta">
-              <div><label>Priority</label><div class="v">${esc(score)}</div></div>
-            </div>` : '' }
-          <div class="block">
-            <h2>Description</h2>
-            <textarea class="edit" id="editDesc" placeholder="Describe the idea…">${esc(desc)}</textarea>
-          </div>
-          <div class="block">
-            <h2>AI-native approach</h2>
-            <textarea class="edit" id="editAi" placeholder="How is this AI-native? (this feeds the design brief)">${esc(aiNative)}</textarea>
-          </div>
-          <div class="block">
-            <h2>Open questions</h2>
-            <textarea class="edit oqedit" id="editOq" placeholder="Anything to resolve in design…">${esc(oq)}</textarea>
-          </div>
-          <div class="block" style="display:flex;align-items:center;gap:12px;margin-top:28px;
-               padding-top:18px;border-top:1px solid var(--line)">
-            <button class="ghost" id="saveEdits" disabled>Save changes</button>
-            <button class="run-design" id="runDesign">Run design on this idea →</button>
-            <span class="prose" id="runHint" style="margin:0;flex:1;color:var(--ink-faint)">
-              Edit above, then run design — changes are saved first so the brief reflects them.
-            </span>
-          </div>
-        </div>
+        ${ score ? `<div class="ro-meta"><div><label>Priority</label><div class="v">${esc(score)}</div></div></div>` : '' }
+        <div class="block"><h2>Description</h2>
+          <textarea class="edit" id="editDesc" placeholder="Describe the idea…">${esc(desc0)}</textarea></div>
+        <div class="block"><h2>AI-native approach</h2>
+          <textarea class="edit" id="editAi" placeholder="How is this AI-native? (this feeds the design brief)">${esc(aiNative0)}</textarea></div>
+      </div>
+      <div class="actions">
+        <span class="hint" id="runHint">Check the scope on the right, rewrite, then run design.</span>
+        <button class="ghost" id="saveEdits" disabled>Save changes</button>
+        <button class="primary" id="runDesign">Run design →</button>
+      </div>
+    </section>
+
+    <section class="col chat">
+      <div class="col-head"><span>Scope check</span><span class="chip" id="iChatNote"></span></div>
+      <div class="thread" id="iThread"></div>
+      <div class="err" id="iErr" style="display:none"></div>
+      <div class="composer">
+        <textarea id="iInput" rows="1" placeholder="Push back on the scope, decide what's in and out… then rewrite"></textarea>
+        <button class="send" id="iSend">Send</button>
+      </div>
+      <div class="actions">
+        <span class="hint">Get the scope right, then fold the boundary into the idea.</span>
+        <button class="ghost" id="iRewrite">Rewrite idea from chat</button>
       </div>
     </section>`;
 
-  // Editable pre-design view: track changes to description + open questions, save
-  // them to the queue, and (when running design) save first so the brief is built
-  // from the latest text. Reload after design so the gate flips into the workspace.
+  // ---- left pane: editable idea, save to queue, run design ----
   const editDesc  = document.getElementById('editDesc');
   const editAi    = document.getElementById('editAi');
-  const editOq    = document.getElementById('editOq');
   const saveBtn   = document.getElementById('saveEdits');
   const runBtn    = document.getElementById('runDesign');
   const hint      = document.getElementById('runHint');
   const stateChip = document.getElementById('editState');
 
-  let saved = { reasoning: desc, aiNative: aiNative, openQuestions: oq };   // last-saved values
+  let saved = { reasoning: desc0, aiNative: aiNative0 };   // last-saved values
 
   const grow = el => { el.style.height='auto'; el.style.height = el.scrollHeight + 'px'; };
+  // Current idea as edited (so the scope chat reasons over what's on screen, not stale state).
+  // Open questions aren't shown or edited here — design forms them after scope is locked.
+  const curIdea = () => ({ ...idea, reasoning: editDesc.value.trim(), aiNative: editAi.value.trim() });
   const isDirty = () =>
     editDesc.value.trim() !== saved.reasoning ||
-    editAi.value.trim()   !== saved.aiNative   ||
-    editOq.value.trim()   !== saved.openQuestions;
+    editAi.value.trim()   !== saved.aiNative;
   const refresh = () => {
     saveBtn.disabled = !isDirty();
     if(stateChip) stateChip.textContent = isDirty() ? 'unsaved changes' : 'editable · not yet in design';
   };
-  [editDesc, editAi, editOq].forEach(el => { grow(el); el.addEventListener('input', ()=>{ grow(el); refresh(); }); });
+  [editDesc, editAi].forEach(el => { grow(el); el.addEventListener('input', ()=>{ grow(el); refresh(); }); });
 
   async function saveEdits(){
     if(!isDirty()) return;
-    const body = { id: idea.ideaId, reasoning: editDesc.value.trim(), aiNative: editAi.value.trim(), openQuestions: editOq.value.trim() };
+    const body = { id: idea.ideaId, reasoning: editDesc.value.trim(), aiNative: editAi.value.trim() };
     const r = await fetch('/api/idea',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
     const j = await r.json();
     if(!j.ok) throw new Error(j.error||'save failed');
-    saved = { reasoning: body.reasoning, aiNative: body.aiNative, openQuestions: body.openQuestions };
-    idea.reasoning = body.reasoning; idea.aiNative = body.aiNative; idea.openQuestions = body.openQuestions;
+    saved = { reasoning: body.reasoning, aiNative: body.aiNative };
+    idea.reasoning = body.reasoning; idea.aiNative = body.aiNative;
     refresh();
   }
 
@@ -289,6 +287,67 @@ function renderReadOnly(idea){
       if(hint){ hint.style.color='#fca5a5'; hint.textContent=e.message; }
     }
   });
+
+  // ---- right pane: work-it-through chat (its own message array + endpoint) ----
+  const iThread  = document.getElementById('iThread');
+  const iInput   = document.getElementById('iInput');
+  const iSend    = document.getElementById('iSend');
+  const iRewrite = document.getElementById('iRewrite');
+  const iErr     = document.getElementById('iErr');
+  const iNote    = document.getElementById('iChatNote');
+  let chat = [];   // [{role:'user'|'assistant', content}] — excludes the seeded greeting
+
+  const iAdd = (cls, text) => {
+    const d = document.createElement('div'); d.className = 'msg ' + cls; d.textContent = text;
+    iThread.appendChild(d); iThread.scrollTop = iThread.scrollHeight; return d;
+  };
+  const iShowErr = m => { iErr.style.display='block'; iErr.textContent = m; };
+  const iClearErr = () => { iErr.style.display='none'; };
+
+  iAdd('them', 'Before this goes to design, let\u2019s make sure the scope is right. Is this one coherent change or a couple of things bundled together? Too big, too thin, or about right? Anything it overlaps with that\u2019s already built? I\u2019ll poke at the boundaries \u2014 push back freely. The how-to-build questions get formed at the design step, once the scope is locked \u2014 not here.');
+
+  async function iChat(){
+    const text = iInput.value.trim();
+    if(!text) return;
+    // shortcut: typing "rewrite the idea" triggers the rewrite instead of a chat turn
+    if(/^rewrite( the)?( idea| it)?[.!]?$/i.test(text)){ iInput.value=''; iInput.style.height='auto'; iAdd('you', text); await iDoRewrite(); return; }
+    iClearErr(); iInput.value=''; iInput.style.height='auto';
+    iAdd('you', text); chat.push({ role:'user', content:text });
+    iSend.disabled = true;
+    const t = iAdd('them typing', 'thinking…');
+    try{
+      const r = await fetch('/api/idea-chat',{method:'POST',headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ mode:'chat', idea: curIdea(), messages: chat })});
+      const j = await r.json(); t.remove();
+      if(!j.ok) throw new Error(j.error||'chat failed');
+      iAdd('them', j.text); chat.push({ role:'assistant', content:j.text });
+    }catch(e){ t.remove(); iShowErr(e.message); }
+    iSend.disabled = false; iInput.focus();
+  }
+
+  async function iDoRewrite(){
+    if(chat.length === 0){ iShowErr('Talk the questions through first — there\u2019s nothing to rewrite from yet.'); return; }
+    iClearErr(); iRewrite.disabled = true;
+    const t = iAdd('them typing', 'rewriting the idea…');
+    try{
+      const r = await fetch('/api/idea-chat',{method:'POST',headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ mode:'rewrite', idea: curIdea(), messages: chat })});
+      const j = await r.json(); t.remove();
+      if(!j.ok) throw new Error(j.error||'rewrite failed');
+      const ni = j.idea || {};
+      if(typeof ni.reasoning === 'string'){ editDesc.value = ni.reasoning; grow(editDesc); }
+      if(typeof ni.aiNative === 'string'){ editAi.value = ni.aiNative; grow(editAi); }
+      refresh();
+      if(iNote) iNote.textContent = 'rewritten · review & save';
+      iAdd('them', 'I rewrote the idea on the left from where we landed on scope \u2014 sharpened the description and the in/out boundary. Design will form the build questions from this once you Run design. Read it over; if it\u2019s right, Save changes, then Run design. If not, keep talking and rewrite again.');
+    }catch(e){ t.remove(); iShowErr(e.message); }
+    iRewrite.disabled = false;
+  }
+
+  iSend.addEventListener('click', iChat);
+  iRewrite.addEventListener('click', iDoRewrite);
+  iInput.addEventListener('keydown', e => { if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); iChat(); } });
+  iInput.addEventListener('input', e => { e.target.style.height='auto'; e.target.style.height = Math.min(e.target.scrollHeight,140) + 'px'; });
 }
 
 function showErr(m){ const e=$('err'); e.style.display='block'; e.textContent=m; }
