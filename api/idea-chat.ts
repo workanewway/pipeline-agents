@@ -78,7 +78,7 @@ ${ideaBlock(idea)}
 
 Return ONLY a JSON object, no prose, no markdown fences:
 {
-  "reasoning": "the sharpened Description: a crisp statement of what this idea IS, with an explicit in-scope / out-of-scope boundary reflecting what was decided. If the conversation narrowed the idea or split off a separate idea, reflect only the single narrowed idea here.",
+  "reasoning": "the Description as it should now READ — a clean, standalone statement of what this idea IS and its in/out boundary, written as if it were the idea from the start. Describe ONLY the current idea. Do NOT narrate the change or reference the conversation: no 'scope narrowed', no 'this is NOT a footer', no 'we decided against X', no 'originally this was…'. State the in-scope work plainly and the out-of-scope boundary plainly, without framing it as things that were removed. Downstream (design) reads this as the spec, so it must stand on its own with no history baked in.",
   "aiNative": "the AI-native approach note, updated only if a scope decision changed it; otherwise return it unchanged"
 }`;
       const msgs = [...convo];
