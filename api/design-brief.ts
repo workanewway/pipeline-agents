@@ -29,7 +29,7 @@ const PRIORITY_THRESHOLD = 60;
 const anthropic = new Anthropic();
 const sheets = getSheets();
 
-interface Brief { designBrief: string; buildSequence: string; }
+interface Brief { designBrief: string; buildSequence: string; openQuestions: string; }
 
 // The review every brief must pass, in either mode. Surfaced in the brief text for now;
 // dependency-card generation is a separate follow-on.
@@ -68,14 +68,15 @@ provided a Design Brief and/or Build Sequence below. PRESERVE their intent, stru
 specifics. Do NOT rewrite it into something different, do NOT thin it down, do NOT reorder for
 taste. Only: tighten genuinely unclear wording, fill clear gaps, ensure it follows this project's
 conventions, and run the checks below. If the submitted spec is already sound, return it
-essentially unchanged. Output the refined Design Brief and Build Sequence.
+essentially unchanged. Output the refined Design Brief and Build Sequence, plus any genuinely-open
+design/implementation forks that remain as OPEN QUESTIONS (do not re-open or expand scope).
 
 SUBMITTED DESIGN BRIEF:
 ${submittedBrief || "(none provided — derive a brief consistent with the submitted build sequence)"}
 
 SUBMITTED BUILD SEQUENCE:
 ${submittedSequence || "(none provided — derive one consistent with the submitted brief)"}`
-    : `Produce two things for the idea below, generating them from the idea's substance:
+    : `Produce three things for the idea below, generating them from the idea's substance:
 
 1. DESIGN BRIEF - ready for Claude Design. Center it on the AI-NATIVE INTERACTION: the primary
    surface should be conversational/agentic, not a form-and-dashboard, consistent with the idea's
@@ -84,7 +85,13 @@ ${submittedSequence || "(none provided — derive one consistent with the submit
    styling direction. ${brandGuidance}
 
 2. BUILD SEQUENCE - ordered steps. Build the AI/agent core FIRST, then scaffolding (storage, auth,
-   integrations, deploy). Call out any conventional-code fallback and why. ${deployGuidance}`;
+   integrations, deploy). Call out any conventional-code fallback and why. ${deployGuidance}
+
+3. OPEN QUESTIONS - the design/implementation questions that remain open WITHIN this idea's locked
+   scope: the genuine forks a human should decide before or during the build (which control, which
+   value, which behavior at an edge). Form them strictly from the scope as given. Do NOT question
+   whether the feature should exist, and do NOT propose a larger or different scope — scope is
+   decided upstream and is fixed. If nothing is genuinely open, return an empty string.`;
 
   const system = `You are a senior product designer + tech lead for this project.
 
@@ -103,12 +110,12 @@ ${isRedo ? `THIS IS A REVISION. Wayne sent it back with this feedback:
 Address it directly and note in the brief how this version responds.` : ""}
 
 Output ONLY a JSON object, no prose, no fences:
-{ "designBrief": string, "buildSequence": string }`;
+{ "designBrief": string, "buildSequence": string, "openQuestions": string }`;
 
   const user = `Idea: ${row.get("Title")}
-Reasoning: ${row.get("Reasoning")}
+Reasoning (scope): ${row.get("Reasoning")}
 AI-Native Approach: ${row.get("AI-Native Approach")}
-Open Questions: ${row.get("Open Questions")}`;
+Existing open questions (may be empty — form them if so): ${row.get("Open Questions")}`;
 
   const resp = await anthropic.messages.create({
     model: MODEL,
@@ -127,7 +134,13 @@ Open Questions: ${row.get("Open Questions")}`;
   try {
     const json = text.slice(text.indexOf("{"), text.lastIndexOf("}") + 1);
     const parsed = JSON.parse(json);
-    if (parsed.designBrief && parsed.buildSequence) return parsed as Brief;
+    if (parsed.designBrief && parsed.buildSequence) {
+      return {
+        designBrief: parsed.designBrief,
+        buildSequence: parsed.buildSequence,
+        openQuestions: typeof parsed.openQuestions === "string" ? parsed.openQuestions : "",
+      };
+    }
     return null;
   } catch {
     console.error(`[${row.get("Idea ID")}] could not parse brief JSON. Raw:\n`, text);
@@ -179,6 +192,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       await updateCells(sheets, row.rowNum, {
         "Design Brief": brief.designBrief,
         "Build Sequence": brief.buildSequence,
+        "Open Questions": brief.openQuestions,
         Stage: "In Review",
         "Updated At": now,
       });
