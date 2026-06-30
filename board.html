@@ -180,6 +180,8 @@
   .decide:hover { background: #f0f6fd; }
   .promote { margin-left: auto; font-family: var(--sans); font-size: 11px; font-weight: 700; color: #fff; background: var(--green); border: 0; border-radius: 7px; padding: 5px 11px; cursor: pointer; }
   .promote:hover { background: #38a169; }
+  .advance { margin-left: auto; font-family: var(--sans); font-size: 11px; font-weight: 650; color: #fff; background: var(--action); border: 0; border-radius: 7px; padding: 5px 11px; cursor: pointer; }
+  .advance:hover { background: #2c74bb; }
   .blocked-note { margin-top: 7px; font-size: 10.5px; color: #b23030; background: rgba(229,62,62,.07); border-radius: 6px; padding: 5px 7px; line-height: 1.35; }
 
   /* ── States ────────────────────────────────────────────── */
@@ -283,7 +285,7 @@
       <span class="stamp" id="stamp"></span>
       <button class="ghost" id="runDesign">Run design</button>
       <button class="ghost" id="refresh">Refresh</button>
-      <button class="submit" id="submit" title="Run the watcher: process every decision you've made this session">Submit</button>
+      <button class="submit" id="submit" title="Run the watcher now: fire a build for every Approved idea">Submit</button>
     </div>
   </header>
 
@@ -322,21 +324,10 @@
   ];
   var KNOWN = PHASES.reduce(function (a, p) { return a.concat(p.stages); }, []);
 
-  // Which Review actions are offered, by Stage.
-  // Approve only at In Review (the idea has been designed -> has a real Build Sequence).
-  function reviewOptions(stage) {
-    if (stage === "In Review") return ["Approved", "Hold", "Revise Design", "Revise Research", "Declined"];
-    if (["Captured", "Enriching", "Designing", "Blocked"].indexOf(stage) >= 0) return ["Hold", "Declined"];
-    return []; // Approved onward + Declined are watcher-owned -> read-only
-  }
-
-  var OPT_META = {
-    "Approved":        { color: "#48bb78", note: "passes the build gate" },
-    "Hold":            { color: "#94a3b8", note: "park, with a note" },
-    "Revise Design":   { color: "#d69e2e", note: "back to Designing" },
-    "Revise Research": { color: "#d69e2e", note: "back to Research" },
-    "Declined":        { color: "#e53e3e", note: "terminal" }
-  };
+  // NOTE: design verdicts (Approve / Decline / Revise / Hold) no longer live on the board.
+  // They moved to resolve.html (you read the spec before deciding) and post to /api/decide,
+  // which sets Stage synchronously. The board carries only the quick, spec-free actions:
+  // Send to Design, Advance a verified preview, and Promote. /api/review is now unused.
 
   var els = {
     board: document.getElementById("board"),
@@ -374,7 +365,7 @@
     if (s.indexOf("decline") >= 0) return { cls: "declined", txt: "Declined" };
     if (s.indexOf("revise") >= 0) return { cls: "revise", txt: v };
     if (s.indexOf("hold") >= 0) return { cls: "hold", txt: "Hold" };
-    if (s === "") return null;
+    if (s === "" || s.indexOf("pending") >= 0) return null;  // Review is vestigial now (verdicts are Stage); don't show "Pending"
     return { cls: "pending", txt: v };
   }
   function el(tag, cls, text) { var n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; }
@@ -421,13 +412,19 @@
     if (idea.prodUrl) links.appendChild(extLink(idea.prodUrl, "Live \u2197"));
     foot.appendChild(links);
 
-    var opts = reviewOptions(idea.stage || "");
-    if (opts.length) {
-      var btn = el("button", "decide no-nav", "Decide \u25BE");
-      btn.addEventListener("click", function (e) { e.stopPropagation(); openMenu(idea, opts); });
-      foot.appendChild(btn);
-    }
-    if ((idea.stage || "") === "Ready to Promote") {
+    // Stage-specific quick action. Design verdicts live in resolve (click the card to open
+    // it). The board carries only spec-free moves: send to design, advance a verified
+    // preview to the promotion queue, and promote to prod.
+    var st = idea.stage || "";
+    if (["Captured", "Enriching", "Designing"].indexOf(st) >= 0) {
+      var db = el("button", "decide no-nav", "Design \u2192");
+      db.addEventListener("click", function (e) { e.stopPropagation(); openDesignConfirm(idea); });
+      foot.appendChild(db);
+    } else if (["Testing", "Building", "Preview Deployed"].indexOf(st) >= 0) {
+      var ab = el("button", "advance no-nav", "Ready to promote \u2192");
+      ab.addEventListener("click", function (e) { e.stopPropagation(); openAdvanceConfirm(idea); });
+      foot.appendChild(ab);
+    } else if (st === "Ready to Promote") {
       var pb = el("button", "promote no-nav", "Promote \u2192");
       pb.addEventListener("click", function (e) { e.stopPropagation(); openPromoteConfirm(idea); });
       foot.appendChild(pb);
@@ -463,43 +460,17 @@
     return modal;
   }
 
-  function openMenu(idea, opts) {
-    var m = shell(idea);
-    m.appendChild(el("h3", null, "Review " + idea.id));
-    m.appendChild(el("p", "m-sub", idea.title || ""));
-    var list = el("div", "opt-list");
-    // Pre-design stages: the primary action is sending the idea to design.
-    if (["Captured", "Enriching", "Designing"].indexOf(idea.stage || "") >= 0) {
-      var db = el("button", "opt");
-      var dd = el("span", "dotc"); dd.style.background = "#3182ce"; db.appendChild(dd);
-      db.appendChild(el("span", null, "Send to Design"));
-      db.appendChild(el("small", null, idea.hasBuildSequence ? "refine spec" : "generate spec"));
-      db.addEventListener("click", function () { openDesignConfirm(idea); });
-      list.appendChild(db);
-    }
-    opts.forEach(function (choice) {
-      var meta = OPT_META[choice] || { color: "#94a3b8", note: "" };
-      var b = el("button", "opt");
-      var d = el("span", "dotc"); d.style.background = meta.color; b.appendChild(d);
-      b.appendChild(el("span", null, choice));
-      if (meta.note) b.appendChild(el("small", null, meta.note));
-      b.addEventListener("click", function () { openConfirm(idea, choice); });
-      list.appendChild(b);
-    });
-    m.appendChild(list);
-  }
-
   function openDesignConfirm(idea) {
     var m = shell(idea);
     m.appendChild(el("h3", null, "Send " + idea.id + " to Design?"));
     m.appendChild(el("p", "m-sub", idea.title || ""));
     m.appendChild(warn("blue", idea.hasBuildSequence
-      ? "Refines the existing build sequence and moves " + idea.id + " to In Review. Spends API credits."
-      : "Generates a design brief + build sequence and moves " + idea.id + " to In Review. Spends API credits."));
+      ? "Refines the existing build sequence and moves " + idea.id + " to Designing. Spends API credits."
+      : "Generates a design brief + build sequence and moves " + idea.id + " to Designing. Spends API credits."));
     var errLine = el("p", "m-err", ""); m.appendChild(errLine);
     var actions = el("div", "m-actions");
-    var back = el("button", "btn", "Back"); back.addEventListener("click", function () { openMenu(idea, reviewOptions(idea.stage || "")); });
-    actions.appendChild(back);
+    var cancel = el("button", "btn", "Cancel"); cancel.addEventListener("click", closeModal);
+    actions.appendChild(cancel);
     var go = el("button", "btn primary", "Send to Design");
     go.addEventListener("click", function () { runDesign(idea.id, go, errLine); });
     actions.appendChild(go);
@@ -514,7 +485,46 @@
         if (!res.ok || !res.j || res.j.ok === false) throw new Error((res.j && res.j.error) || "Design failed");
         var designed = res.j.result && res.j.result.designed;
         closeModal(); load();
-        showToast((designed && designed.length) ? (id + " designed → In Review") : (id + ": no spec produced — check the design-brief logs"));
+        showToast((designed && designed.length) ? (id + " designed \u2192 Designing") : (id + ": no spec produced \u2014 check the design-brief logs"));
+      })
+      .catch(function (e) { go.disabled = false; go.textContent = "Try again"; errLine.textContent = e.message; });
+  }
+
+  // Testing hold-release: the human verified the staging preview and advances the card to
+  // the promotion queue. This is the only Build-phase action on the board; it does NOT
+  // deploy (Promote is the separate prod step). Posts /api/decide verdict "Advance".
+  function openAdvanceConfirm(idea) {
+    var m = shell(idea);
+    m.appendChild(el("h3", null, "Advance " + idea.id + " to Ready to Promote?"));
+    m.appendChild(el("p", "m-sub", idea.title || ""));
+    m.appendChild(warn("blue", "Confirms you've verified the staging preview. Moves " + idea.id + " to the promotion queue \u2014 it does NOT deploy to production (that's the separate Promote step)."));
+    if (idea.previewUrl) {
+      var d = el("div", "m-warn blue");
+      var a = document.createElement("a");
+      a.href = idea.previewUrl; a.target = "_blank"; a.rel = "noopener";
+      a.textContent = "Open the staging preview \u2197"; a.style.color = "#245a8a"; a.style.fontWeight = "700"; a.style.textDecoration = "none";
+      d.appendChild(a); m.appendChild(d);
+    }
+    var errLine = el("p", "m-err", ""); m.appendChild(errLine);
+    var actions = el("div", "m-actions");
+    var cancel = el("button", "btn", "Cancel"); cancel.addEventListener("click", closeModal); actions.appendChild(cancel);
+    var go = el("button", "btn primary", "Advance \u2192");
+    go.addEventListener("click", function () { runAdvance(idea, go, errLine); });
+    actions.appendChild(go);
+    m.appendChild(actions);
+  }
+
+  function runAdvance(idea, go, errLine) {
+    go.disabled = true; go.textContent = "Advancing\u2026"; errLine.textContent = "";
+    fetch(api("/api/decide"), {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: idea.id, verdict: "Advance" })
+    })
+      .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+      .then(function (res) {
+        if (!res.ok || !res.j || res.j.ok === false) throw new Error((res.j && res.j.error) || "Advance failed");
+        closeModal(); load();
+        showToast(idea.id + " \u2192 Ready to Promote");
       })
       .catch(function (e) { go.disabled = false; go.textContent = "Try again"; errLine.textContent = e.message; });
   }
@@ -534,7 +544,7 @@
     modal.appendChild(el("p", "m-sub", top
       ? "Designs the highest-priority Captured idea: " + top.id + " — " + (top.title || "")
       : "No Captured idea over priority 60 is waiting. (To design a specific idea, use Decide → Send to Design on its card.)"));
-    if (top) modal.appendChild(warn("blue", "Generates / refines its spec and moves it to In Review. Spends API credits. One idea per run."));
+    if (top) modal.appendChild(warn("blue", "Generates / refines its spec and moves it to Designing. Spends API credits. One idea per run."));
     var errLine = el("p", "m-err", ""); modal.appendChild(errLine);
     var actions = el("div", "m-actions");
     var cancel = el("button", "btn", "Cancel"); cancel.addEventListener("click", closeModal); actions.appendChild(cancel);
@@ -550,83 +560,7 @@
     els.overlay.onclick = function (e) { if (e.target === els.overlay) closeModal(); };
   }
 
-  function openConfirm(idea, choice) {
-    var m = shell(idea);
-    var isApprove = choice === "Approved";
-    var isDecline = choice === "Declined";
-    var isRevise = choice.indexOf("Revise") === 0;
-    var isHold = choice === "Hold";
-
-    m.appendChild(el("h3", null, choice + " " + idea.id + "?"));
-    m.appendChild(el("p", "m-sub", idea.title || ""));
-
-    if (isApprove) {
-      var w = el("div", "m-warn blue");
-      w.innerHTML = "<strong>This passes the build gate.</strong> On its next run the watcher fires a real autonomous build on the <strong>staging</strong> branch \u2014 it spends API credits and commits code. It does not promote to production; that stays a separate manual step.";
-      m.appendChild(w);
-      if (!idea.hasBuildSequence) {
-        var nb = el("div", "m-warn amber");
-        nb.innerHTML = "<strong>No Build Sequence yet.</strong> This idea hasn't been through the resolve view, so the build will likely produce \u201Cno changes\u201D (the IDEA-0012 trap). Consider resolving it first.";
-        m.appendChild(nb);
-      }
-    } else if (isDecline) {
-      m.appendChild(warn("red", "<strong>Declining is terminal.</strong> The idea stops here and the reason is logged. You can add one below."));
-    } else if (isRevise) {
-      var back = choice === "Revise Design" ? "Designing" : "Research";
-      m.appendChild(warn("amber", "Sends " + idea.id + " back to <strong>" + back + "</strong>. Your feedback travels with it into the redo, so be specific about what should change."));
-    } else if (isHold) {
-      m.appendChild(warn("blue", "Parks " + idea.id + " with an optional note. Nothing else changes."));
-    }
-
-    var ta = null;
-    if (isRevise || isDecline || isHold) {
-      ta = document.createElement("textarea");
-      ta.className = "m-feedback";
-      ta.placeholder = isRevise ? "What should change? (required)" : "Optional note\u2026";
-      m.appendChild(ta);
-    }
-
-    var errLine = el("p", "m-err", ""); m.appendChild(errLine);
-
-    var actions = el("div", "m-actions");
-    var back = el("button", "btn", "Back"); back.addEventListener("click", function () { openMenu(idea, reviewOptions(idea.stage || "")); });
-    actions.appendChild(back);
-
-    var primaryClass = "btn primary" + (isApprove ? " go" : isDecline ? " danger" : "");
-    var label = isApprove ? "Approve & pass gate" : isDecline ? "Decline" : isRevise ? "Send back" : "Hold";
-    var go = el("button", primaryClass, label);
-    function syncEnabled() { if (isRevise) go.disabled = !(ta && ta.value.trim()); }
-    if (ta) ta.addEventListener("input", syncEnabled);
-    syncEnabled();
-    go.addEventListener("click", function () {
-      var fb = ta ? ta.value.trim() : "";
-      if (isRevise && !fb) { errLine.textContent = "Add feedback so the redo has direction."; return; }
-      submit(idea, choice, fb, go, errLine);
-    });
-    actions.appendChild(go);
-    m.appendChild(actions);
-  }
-
   function warn(kind, html) { var w = el("div", "m-warn " + kind); w.innerHTML = html; return w; }
-
-  function submit(idea, review, feedback, btn, errLine) {
-    btn.disabled = true; btn.textContent = "Saving\u2026"; errLine.textContent = "";
-    fetch(api("/api/review"), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id: idea.id, review: review, feedback: feedback })
-    })
-      .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
-      .then(function (res) {
-        if (!res.ok || !res.j || res.j.ok === false) throw new Error((res.j && res.j.error) || "Save failed");
-        // reflect locally
-        for (var i = 0; i < ALL.length; i++) { if (ALL[i].id === idea.id) { ALL[i].review = review; break; } }
-        closeModal();
-        render();
-        showToast(idea.id + " \u2192 " + review + (review === "Approved" ? " \u00B7 watcher will build on next run" : ""));
-      })
-      .catch(function (e) { btn.disabled = false; btn.textContent = "Try again"; errLine.textContent = e.message; });
-  }
 
   var toastTimer = null;
   function showToast(msg) {
@@ -790,11 +724,7 @@
   // ── Submit: run the watcher ──────────────────────────────────────────
   function openSubmit() {
     var scoped = ALL.filter(inScope);
-    var pend = scoped.filter(function (i) { return (i.stage || "") === "In Review" && /approve|decline|revise|hold/i.test(i.review || ""); });
-    var approved = pend.filter(function (i) { return /approve/i.test(i.review || ""); });
-    var revise = pend.filter(function (i) { return /revise/i.test(i.review || ""); });
-    var holds = pend.filter(function (i) { return /hold/i.test(i.review || ""); });
-    var declines = pend.filter(function (i) { return /decline/i.test(i.review || ""); });
+    var approved = scoped.filter(function (i) { return (i.stage || "") === "Approved"; });
 
     els.overlay.innerHTML = "";
     var modal = el("div", "modal");
@@ -803,27 +733,22 @@
     var x = el("button", "m-close", "\u00D7"); x.setAttribute("aria-label", "Close"); x.addEventListener("click", closeModal);
     head.appendChild(x); modal.appendChild(head);
 
-    modal.appendChild(el("h3", null, "Submit to the watcher"));
-    modal.appendChild(el("p", "m-sub", "Runs the watcher now. It reads every decision in the queue and acts on it: Approved fires a build, Revise loops back with your feedback, Declined and Hold are logged."));
+    modal.appendChild(el("h3", null, "Fire approved builds"));
+    modal.appendChild(el("p", "m-sub", "Runs the watcher now instead of waiting for its cron. The watcher fires a build for every idea at the Approved stage \u2014 that's its only job."));
 
     if (approved.length) {
       modal.appendChild(warn("blue", "<strong>" + approved.length + " Approved</strong> \u2192 each fires a real autonomous build on the staging branch (spends API credits, commits code). Promotion to production stays separate and manual."));
     }
-    var bits = [];
-    if (approved.length) bits.push(approved.length + " Approved");
-    if (revise.length) bits.push(revise.length + " Revise");
-    if (holds.length) bits.push(holds.length + " Hold");
-    if (declines.length) bits.push(declines.length + " Declined");
-    modal.appendChild(el("p", "m-sub", bits.length
-      ? "Waiting at In Review: " + bits.join(" \u00B7 ") + "."
-      : "No new decisions waiting at In Review \u2014 running will just advance any in-flight builds."));
+    modal.appendChild(el("p", "m-sub", approved.length
+      ? "Waiting at Approved: " + approved.map(function (i) { return i.id; }).join(", ") + "."
+      : "Nothing at Approved right now \u2014 running the watcher will do nothing. (Approve an idea in its resolve view first.)"));
 
     var errLine = el("p", "m-err", "");
     modal.appendChild(errLine);
 
     var actions = el("div", "m-actions");
     var cancel = el("button", "btn", "Cancel"); cancel.addEventListener("click", closeModal); actions.appendChild(cancel);
-    var go = el("button", "btn primary go", "Submit");
+    var go = el("button", "btn primary go", "Run watcher");
     go.addEventListener("click", function () { runSubmit(go, cancel, errLine, modal); });
     actions.appendChild(go);
     modal.appendChild(actions);
