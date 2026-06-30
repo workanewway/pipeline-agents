@@ -108,6 +108,7 @@
   .verdict-row{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
   .verdict-row button{padding:8px 14px;border-radius:8px;font:inherit;font-size:13px;cursor:pointer}
   .vmsg{margin-top:8px;font-size:13px;color:var(--muted);min-height:16px}
+  .vnote{font-size:13px;color:var(--muted);margin:0 0 4px}
 </style>
 </head>
 <body>
@@ -128,13 +129,24 @@
         <div class="block"><h2>Design brief</h2><div class="prose" id="brief">—</div></div>
         <div class="block"><h2>Build sequence</h2><div class="seq" id="seq">—</div></div>
         <div class="block verdict" id="verdictBlock" style="display:none">
-          <h2>Your call</h2>
-          <textarea id="vFeedback" rows="2" placeholder="Optional note / reason (required to send back to research)"></textarea>
-          <div class="verdict-row">
-            <button class="primary" id="vApprove">Approve → build</button>
-            <button class="ghost" id="vRevise">Send back to Research</button>
-            <button class="ghost" id="vDecline">Decline</button>
-            <button class="ghost" id="vHold">Hold</button>
+          <h2 id="verdictHead">Your call</h2>
+          <div id="designVerdicts">
+            <textarea id="vFeedback" rows="2" placeholder="Optional note / reason (required to send back to research)"></textarea>
+            <div class="verdict-row">
+              <button class="primary" id="vApprove">Approve → build</button>
+              <button class="ghost" id="vRevise">Send back to Research</button>
+              <button class="ghost" id="vDecline">Decline</button>
+              <button class="ghost" id="vHold">Hold</button>
+            </div>
+          </div>
+          <div id="advanceVerdict" style="display:none">
+            <p class="vnote">Build preview is ready. Verify it against the staging preview, then release the hold.</p>
+            <div class="verdict-row">
+              <button class="primary" id="vAdvance">Advance to Ready to Promote →</button>
+            </div>
+          </div>
+          <div id="readonlyVerdict" style="display:none">
+            <p class="vnote" id="readonlyNote"></p>
           </div>
           <div class="vmsg" id="vMsg"></div>
         </div>
@@ -199,7 +211,8 @@ async function load(){
     if(!inDesign){ renderReadOnly(idea); return; }
 
     $('back').href = homeHref;
-    $('verdictBlock').style.display = '';   // design workspace: the human's verdict lives here now
+    $('verdictBlock').style.display = '';   // design workspace: the human's actions live here now
+    setVerdictMode(idea.stage);             // ...but WHICH actions depend on the stage
     $('openQ').textContent = idea.openQuestions || '(none recorded)';
     $('brief').textContent = idea.designBrief || '(no brief yet — run design-brief first)';
     $('seq').textContent = idea.buildSequence || '(no build sequence yet)';
@@ -502,6 +515,35 @@ $('vApprove').onclick = ()=>decide('Approve');
 $('vRevise').onclick  = ()=>decide('Revise Research');
 $('vDecline').onclick = ()=>decide('Decline');
 $('vHold').onclick    = ()=>decide('Hold');
+$('vAdvance').onclick = ()=>decide('Advance');
+
+// The design workspace renders for any post-scope card (it has a brief), but the ACTION
+// it offers must match the stage — otherwise opening a Testing card and hitting "Approve"
+// regresses it to Approved. Designing -> design verdicts; Testing/Building -> advance the
+// hold; everything else -> read-only status note (those moves are the watcher's or a board
+// promote, not a resolve action).
+function setVerdictMode(stage){
+  const s = (stage||'').trim();
+  const show = (id,on)=>{ const e=$(id); if(e) e.style.display = on ? '' : 'none'; };
+  const design  = (s === 'Designing' || s === 'In Review');                 // tolerate legacy
+  const testing = (s === 'Testing' || s === 'Building' || s === 'Preview Deployed');
+  show('designVerdicts', design);
+  show('advanceVerdict', testing);
+  show('readonlyVerdict', !design && !testing);
+  if(design)       $('verdictHead').textContent = 'Your call';
+  else if(testing) $('verdictHead').textContent = 'Verify & advance';
+  else {
+    $('verdictHead').textContent = 'Status';
+    const note = {
+      'Approved': 'Approved — the watcher fires the build on its next run (or hit Submit on the board to fire now). Nothing to do here.',
+      'Ready to Promote': 'Ready to Promote — promote to production from the board when you’re ready.',
+      'Live': 'Live in production.',
+      'Declined': 'Declined.',
+      'Blocked': 'Blocked — see the board for the reason.'
+    }[s] || 'No resolve action at this stage.';
+    $('readonlyNote').textContent = note;
+  }
+}
 
 // Exit to the board. If we arrived from a same-origin page (the board), go back so
 // its filters and scroll survive. Otherwise let the href load the board fresh.
