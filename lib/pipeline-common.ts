@@ -284,3 +284,112 @@ export async function setResearchEnabled(sheets: Sheets, project: string, enable
     });
   }
 }
+
+// ---------------------------------------------------------------------------
+// Live repo manifest — grounds the pre-build stages in what ACTUALLY exists in the
+// build-target repo, instead of reasoning from the hand-written context alone (which
+// silently drifts). Pages (.html) and endpoints (api/*.ts) get a one-line descriptor
+// pulled from their OWN leading title/comment — self-documenting, so it never drifts;
+// other source (lib/, supabase/) is listed as bare paths. Cost: resolve branch (1 call)
+// + recursive tree (1) + a capped content fetch per high-value file. Cached per
+// repo@branch for the warm life of the serverless instance. Fails SOFT: any error
+// returns a short "(unavailable)" note so research/design degrade to prior behavior
+// (reason from context only) rather than crashing.
+// ---------------------------------------------------------------------------
+const _manifestCache = new Map<string, { text: string; at: number }>();
+const MANIFEST_TTL_MS = 5 * 60 * 1000;
+
+// "github.com/workanewway/vetting-platform-api" -> "workanewway/vetting-platform-api"
+export function ghRepoSlug(repo: string): string {
+  return repo.replace(/^https?:\/\//, "").replace(/^github\.com\//, "").replace(/\.git$/, "").trim();
+}
+export const isGithubRepo = (repo: string) => /(^|\/)github\.com\//.test(repo) || /^[\w.-]+\/[\w.-]+$/.test(repo);
+
+async function ghJson(url: string, token: string): Promise<any> {
+  const r = await fetch(url, {
+    headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json", "User-Agent": "pipeline-manifest" },
+  });
+  if (!r.ok) throw new Error(`GitHub ${r.status} (${(await r.text()).slice(0, 120)})`);
+  return r.json();
+}
+
+// short descriptor from a file's leading title/comment
+function descriptorFrom(path: string, content: string): string {
+  if (path.endsWith(".html")) {
+    const title = content.match(/<title[^>]*>([^<]+)<\/title>/i);
+    if (title && title[1].trim()) return title[1].trim().slice(0, 110);
+    const h1 = content.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i);
+    if (h1) return h1[1].replace(/<[^>]+>/g, "").trim().slice(0, 110);
+    const cmt = content.match(/<!--\s*(.+?)\s*-->/);
+    if (cmt) return cmt[1].trim().slice(0, 110);
+    return "";
+  }
+  // .ts/.js: first DESCRIPTIVE comment line, skipping the "api/foo.ts -> ROUTE" header.
+  const comments = content.split("\n").slice(0, 60)
+    .map((l) => l.trim())
+    .filter((l) => l.startsWith("//") || l.startsWith("*"))
+    .map((l) => l.replace(/^\/+\s?|^\*+\s?/g, "").trim())
+    .filter(Boolean);
+  const meaningful = comments.find((c) =>
+    !/->/.test(c) && !/^api\//.test(c) && !/^[\w/.-]+\.(ts|js)\b/.test(c) &&
+    !/^[-=_*~\s]{6,}$/.test(c) && /[a-zA-Z]/.test(c) && c.length > 12);
+  return (meaningful || comments[0] || "").slice(0, 110);
+}
+
+export async function getRepoManifest(repo: string, branch: string): Promise<string> {
+  const slug = ghRepoSlug(repo);
+  const cacheKey = `${slug}@${branch}`;
+  const cached = _manifestCache.get(cacheKey);
+  if (cached && Date.now() - cached.at < MANIFEST_TTL_MS) return cached.text;
+
+  const token = process.env.GITHUB_DISPATCH_TOKEN;
+  const header = `BUILD-TARGET REPO — ${slug} @ ${branch} (live manifest of what currently exists)`;
+  if (!token) return `${header}\n(manifest unavailable: GITHUB_DISPATCH_TOKEN not set — reasoning from context only)`;
+
+  try {
+    // resolve branch -> root tree sha, then one recursive tree call for every path
+    const head = await ghJson(`https://api.github.com/repos/${slug}/commits/${encodeURIComponent(branch)}`, token);
+    const treeSha = head?.commit?.tree?.sha;
+    if (!treeSha) throw new Error("could not resolve branch tree sha");
+    const tree = await ghJson(`https://api.github.com/repos/${slug}/git/trees/${treeSha}?recursive=1`, token);
+
+    const keep: string[] = (tree.tree || [])
+      .filter((n: any) => n.type === "blob")
+      .map((n: any) => n.path as string)
+      .filter((p: string) => /\.(html|ts|js|sql)$/.test(p) && !/node_modules\/|\.next\/|dist\/|\.vercel\/|\.d\.ts$/.test(p));
+
+    const pages = keep.filter((p) => p.endsWith(".html"));
+    const endpoints = keep.filter((p) => p.startsWith("api/") && p.endsWith(".ts"));
+    const lib = keep.filter((p) => p.startsWith("lib/"));
+    const db = keep.filter((p) => /^supabase\//.test(p) || p.endsWith(".sql"));
+    const other = keep.filter((p) => !pages.includes(p) && !endpoints.includes(p) && !lib.includes(p) && !db.includes(p));
+
+    // annotate only the high-value surface (pages + endpoints), capped, from their own headers
+    const HIGH = [...pages, ...endpoints].slice(0, 40);
+    const desc = new Map<string, string>();
+    await Promise.all(HIGH.map(async (p) => {
+      try {
+        const f = await ghJson(`https://api.github.com/repos/${slug}/contents/${encodeURIComponent(p)}?ref=${encodeURIComponent(branch)}`, token);
+        const content = f.encoding === "base64" ? Buffer.from(f.content, "base64").toString("utf8") : (f.content || "");
+        const d = descriptorFrom(p, content);
+        if (d) desc.set(p, d);
+      } catch { /* leave undescribed */ }
+    }));
+
+    const fmt = (p: string) => (desc.has(p) ? `  ${p} — ${desc.get(p)}` : `  ${p}`);
+    const section = (title: string, list: string[]) => (list.length ? `\n${title}:\n${list.map(fmt).join("\n")}` : "");
+
+    const text = header +
+      section("Pages (browser surface)", pages) +
+      section("API endpoints", endpoints) +
+      section("Library", lib) +
+      section("Database", db) +
+      section("Other source", other) +
+      (tree.truncated ? "\n(note: GitHub truncated the tree — list is partial)" : "");
+
+    _manifestCache.set(cacheKey, { text, at: Date.now() });
+    return text;
+  } catch (err: any) {
+    return `${header}\n(manifest unavailable: ${String(err?.message || err)} — reasoning from context only)`;
+  }
+}
