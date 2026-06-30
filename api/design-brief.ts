@@ -1,7 +1,8 @@
 /**
  * api/design-brief.ts  ->  GET/POST /api/design-brief
  * Promotes top-priority "Captured" ideas (and re-does any "Designing" rows the watcher
- * sent back with feedback) into a Design Brief + Build Sequence, then moves them to "In Review".
+ * sent back with feedback) into a Design Brief + Build Sequence, then moves them to "Designing"
+ * (the spec is ready to review/resolve in resolve.html; the human approves from there).
  *
  * Input-aware: if the Captured idea ALREADY carries a Design Brief / Build Sequence
  * (e.g. a fully-baked idea added through intake), design-brief switches from "generate
@@ -214,7 +215,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         "Design Brief": brief.designBrief,
         "Build Sequence": brief.buildSequence,
         "Open Questions": brief.openQuestions,
-        Stage: "In Review",
+        Stage: "Designing",
         "Updated At": now,
       });
       designed.push(row.get("Idea ID"));
