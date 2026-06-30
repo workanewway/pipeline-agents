@@ -40,11 +40,14 @@ async function callClaude(system: string, messages: { role: string; content: str
 }
 
 function ideaBlock(idea: any): string {
+  // No "Open questions" here on purpose: at the scope stage, design questions don't exist
+  // yet (they're formed later, at design). Feeding a stale openQuestions value would drag
+  // pre-decided questions into the scope conversation and the rewrite — exactly the drift
+  // we're removing. Scope reasons only from what the idea IS.
   return [
     `Title: ${idea?.title || "(untitled)"}`,
     `Description: ${idea?.reasoning || "(none)"}`,
     `AI-native approach: ${idea?.aiNative || "(none)"}`,
-    `Open questions:\n${idea?.openQuestions || "(none recorded)"}`,
   ].join("\n");
 }
 
