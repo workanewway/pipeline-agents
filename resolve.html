@@ -101,6 +101,13 @@
 
   @media(max-width:860px){ main{grid-template-columns:1fr;grid-template-rows:1fr 1fr}
     .col.spec{border-right:none;border-bottom:1px solid var(--line)} }
+
+  .verdict{border-top:1px solid var(--line);padding-top:14px;margin-top:4px}
+  .verdict textarea{width:100%;box-sizing:border-box;background:var(--panel);color:var(--ink);
+    border:1px solid var(--line);border-radius:8px;padding:8px;font:inherit;font-size:13px;resize:vertical}
+  .verdict-row{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+  .verdict-row button{padding:8px 14px;border-radius:8px;font:inherit;font-size:13px;cursor:pointer}
+  .vmsg{margin-top:8px;font-size:13px;color:var(--muted);min-height:16px}
 </style>
 </head>
 <body>
@@ -120,6 +127,17 @@
         <div class="block"><h2>Open questions to resolve</h2><div class="oq" id="openQ">—</div></div>
         <div class="block"><h2>Design brief</h2><div class="prose" id="brief">—</div></div>
         <div class="block"><h2>Build sequence</h2><div class="seq" id="seq">—</div></div>
+        <div class="block verdict" id="verdictBlock" style="display:none">
+          <h2>Your call</h2>
+          <textarea id="vFeedback" rows="2" placeholder="Optional note / reason (required to send back to research)"></textarea>
+          <div class="verdict-row">
+            <button class="primary" id="vApprove">Approve → build</button>
+            <button class="ghost" id="vRevise">Send back to Research</button>
+            <button class="ghost" id="vDecline">Decline</button>
+            <button class="ghost" id="vHold">Hold</button>
+          </div>
+          <div class="vmsg" id="vMsg"></div>
+        </div>
       </div>
     </section>
 
@@ -143,6 +161,8 @@
 <script>
 const qs = new URLSearchParams(location.search);
 const ID = qs.get('id');
+const KEY = qs.get('key') || '';   // forwarded to BOARD_KEY-gated endpoints (/api/decide)
+const homeHref = '/' + (KEY ? ('?key=' + encodeURIComponent(KEY)) : '');
 let idea = null;
 let messages = [];          // {role, content}
 let pendingSeq = null;      // proposed rewrite, awaiting save
@@ -178,6 +198,8 @@ async function load(){
     const inDesign = (idea.designBrief||'').trim() || (idea.buildSequence||'').trim();
     if(!inDesign){ renderReadOnly(idea); return; }
 
+    $('back').href = homeHref;
+    $('verdictBlock').style.display = '';   // design workspace: the human's verdict lives here now
     $('openQ').textContent = idea.openQuestions || '(none recorded)';
     $('brief').textContent = idea.designBrief || '(no brief yet — run design-brief first)';
     $('seq').textContent = idea.buildSequence || '(no build sequence yet)';
@@ -450,13 +472,36 @@ async function save(){
     idea.buildSequence = pendingSeq; pendingSeq = null;
     $('seq').classList.remove('changed');
     $('specNote').textContent = 'saved ✓';
-    addMsg('assistant','Saved to the queue. The build sequence is updated; the idea stays In Review. Approve it (in the sheet or the board) when you’re ready for the build to fire — that’s the separate gate.','sys');
+    addMsg('assistant','Saved to the queue. The build sequence is updated. When the spec is right, make your call below — “Approve → build” sends it to the build queue (the watcher fires it on its next run, or hit Submit on the board to fire now).','sys');
   }catch(e){ showErr(e.message); $('save').disabled=false; }
 }
 
 $('send').onclick = send;
 $('rewrite').onclick = rewrite;
 $('save').onclick = save;
+
+// Human verdict, applied synchronously via the BOARD_KEY-gated /api/decide. Approve
+// moves the card to "Approved" (the watcher fires the build); the others route per the
+// stage contract. Then we return to the board.
+async function decide(verdict){
+  const feedback = ($('vFeedback').value||'').trim();
+  if(verdict==='Revise Research' && !feedback){ $('vMsg').textContent = 'Add a note so the redo has direction.'; $('vFeedback').focus(); return; }
+  if(verdict==='Decline' && !confirm('Decline this idea? It moves to Declined (terminal).')) return;
+  const btns = document.querySelectorAll('#verdictBlock button'); btns.forEach(b=>b.disabled=true);
+  $('vMsg').textContent = 'Saving your call…';
+  try{
+    const r = await fetch('/api/decide?key=' + encodeURIComponent(KEY),{method:'POST',headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ id: idea.ideaId, verdict, feedback })});
+    const j = await r.json();
+    if(!j.ok) throw new Error(j.error||'decide failed');
+    $('vMsg').textContent = 'Done — now at “' + j.stage + '”. Back to the board…';
+    setTimeout(()=>{ location.href = homeHref; }, 950);
+  }catch(e){ $('vMsg').textContent = e.message; btns.forEach(b=>b.disabled=false); }
+}
+$('vApprove').onclick = ()=>decide('Approve');
+$('vRevise').onclick  = ()=>decide('Revise Research');
+$('vDecline').onclick = ()=>decide('Decline');
+$('vHold').onclick    = ()=>decide('Hold');
 
 // Exit to the board. If we arrived from a same-origin page (the board), go back so
 // its filters and scroll survive. Otherwise let the href load the board fresh.
