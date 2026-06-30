@@ -15,7 +15,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import {
   PROJECTS, AI_NATIVE_DIRECTIVE, Project, cronAuthorized,
   getSheets, readQueue, newRow, setCell, SHEET_ID, TAB, DEFAULT_MODEL,
-  readResearchEnabled,
+  readResearchEnabled, getRepoManifest, isGithubRepo,
 } from "../lib/pipeline-common.js";
 export const maxDuration = 60;
 
@@ -83,10 +83,14 @@ async function research(project: Project, existingTitles: string[]): Promise<Ide
       ? "a senior product strategist for the following product you sell"
       : "a senior solutions strategist for the following client engagement; propose improvements that serve the client better and deepen the relationship";
 
+  // Ground ideation in what's ACTUALLY shipped, not just the hand-written context. Reads
+  // `main` (shipped reality). Only for projects backed by a real GitHub repo; soft-fails.
+  const manifest = isGithubRepo(project.repo) ? await getRepoManifest(project.repo, "main") : "";
+
   const system = `You are ${role}.
 
 ${project.context}
-
+${manifest ? `\n${manifest}\nGround your ideas in the surface above — don't propose what already exists, and describe ideas consistently with what's actually built.\n` : ""}
 ${AI_NATIVE_DIRECTIVE}
 
 Your job: monitor the focus areas, find what's genuinely new or shifting, and propose ideas
