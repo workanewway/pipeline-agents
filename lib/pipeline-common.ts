@@ -15,7 +15,13 @@ export const DEFAULT_MODEL = "claude-sonnet-4-6"; // swap to "claude-opus-4-8" w
  *  If CRON_SECRET isn't set, routes are open — fine for first tests, set it before going live. */
 export function cronAuthorized(authHeader?: string): boolean {
   const secret = process.env.CRON_SECRET;
-  if (!secret) return true;
+  if (!secret) {
+    // No secret configured. Fail OPEN only outside production (dev/preview convenience).
+    // In production a missing CRON_SECRET is a misconfiguration, NOT a reason to wave
+    // everyone through — the watcher fires real builds and research spends real money.
+    // Fail CLOSED so the mistake is loud (routes 401) instead of silently wide open.
+    return process.env.VERCEL_ENV !== "production";
+  }
   return authHeader === `Bearer ${secret}`;
 }
 
