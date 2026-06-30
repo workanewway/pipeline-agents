@@ -1,38 +1,61 @@
 /**
  * api/digest.ts  ->  GET/POST /api/digest
- * Builds the review digest from rows at Stage = "In Review" (set SOURCE_STAGE=Captured to test
- * before the design step has run). Returns the digest HTML in the response so you can SEE it in a
- * browser, and ALSO emails it via Resend if RESEND_API_KEY / DIGEST_FROM / DIGEST_TO are set.
+ * The pipeline's doorbell. Once a day (14:00 UTC, after the other agents) it gathers everything
+ * WAITING ON A HUMAN and — if Resend env is set — emails it. Returns the HTML in the response too,
+ * so you can open /api/digest in a browser to preview it.
+ *
+ * After the stage-contract refactor the human-gated stages are Designing (needs a verdict),
+ * Testing / Preview Deployed (needs verification + advance), Ready to Promote (needs a promote),
+ * and Blocked (needs attention). Override the set with SOURCE_STAGES (comma-separated) to test.
+ *
+ * Emails via Resend only if RESEND_API_KEY / DIGEST_FROM / DIGEST_TO are set; otherwise it just
+ * returns the HTML (fail-soft — no doorbell, but never an error).
  */
 
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import Anthropic from "@anthropic-ai/sdk";
-import { getSheets, readQueue, QueueRow, SHEET_ID, SHEET_GID, DEFAULT_MODEL, cronAuthorized } from "../lib/pipeline-common.js";
+import { getSheets, readQueue, QueueRow, DEFAULT_MODEL, cronAuthorized } from "../lib/pipeline-common.js";
 
 export const maxDuration = 60;
 
 const MODEL = DEFAULT_MODEL;
-const SOURCE_STAGE = process.env.SOURCE_STAGE || "In Review";
+
+// The doorbell's whole purpose: surface what's WAITING ON A HUMAN.
+const WAITING_STAGES = (process.env.SOURCE_STAGES || "Designing,Testing,Preview Deployed,Ready to Promote,Blocked")
+  .split(",").map((s) => s.trim()).filter(Boolean);
+
+// Per-stage: the action it's waiting on, an instruction, and a sort order (most urgent first).
+const STAGE_INFO: Record<string, { label: string; instruction: string; order: number }> = {
+  "Blocked":          { label: "Blocked — needs attention", instruction: "A build failed or hit a guard. Open it to see the reason and decide what to do.", order: 1 },
+  "Testing":          { label: "Needs your verification", instruction: "Build preview is ready — verify it, then advance it to Ready to Promote.", order: 2 },
+  "Preview Deployed": { label: "Needs your verification", instruction: "Build preview is ready — verify it, then advance it to Ready to Promote.", order: 2 },
+  "Ready to Promote": { label: "Ready to promote to production", instruction: "Verified and waiting. Promote from the board when you're ready.", order: 3 },
+  "Designing":        { label: "Needs your verdict", instruction: "The spec is ready. Open it in resolve to approve, send back, or decline.", order: 4 },
+};
 
 const anthropic = new Anthropic();
 const sheets = getSheets(true);
 
+const APP_BASE = (process.env.BOARD_URL || "https://pipeline-agents-opal.vercel.app").replace(/\/$/, "");
 const esc = (s: string) => (s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-const rowLink = (rowNum: number) =>
-  `https://docs.google.com/spreadsheets/d/${SHEET_ID}/edit#gid=${SHEET_GID}&range=A${rowNum}`;
+// Deep-link to the per-item resolve view (stage-aware). No key in the URL — emails get logged and
+// forwarded, so secrets never go in links; act from your keyed board session.
+const resolveLink = (id: string) => `${APP_BASE}/resolve.html?id=${encodeURIComponent(id)}`;
 
 async function synthesize(items: QueueRow[]): Promise<string> {
   const compact = items
-    .map((it) => `- [${it.get("Product")}] ${it.get("Title")} (priority ${it.get("Priority Score")}) - AI-native: ${it.get("AI-Native Approach")}`)
+    .map((it) => `- [${it.get("Stage")}] ${it.get("Product")}: ${it.get("Title")} (priority ${it.get("Priority Score")})`)
     .join("\n");
   try {
     const resp = await anthropic.messages.create({
       model: MODEL,
       max_tokens: 600,
-      system: `You are the chief of staff for Wayne's product pipeline. He is about to review the items below.
-Write a 3-5 sentence editorial brief: what to look at first and why, where you'd be least confident, any
-cross-project theme. Direct, no fluff, no markdown headers or bullets. Plain prose only.`,
-      messages: [{ role: "user", content: `Items awaiting review:\n${compact}` }],
+      system: `You are the chief of staff for Wayne's product pipeline. Below is everything currently
+waiting on him — each item tagged with the stage it's stuck at (Designing = needs his verdict,
+Testing = needs him to verify a build preview, Ready to Promote = needs him to ship it, Blocked =
+something failed). Write a 3-5 sentence editorial brief: what to handle first and why, anything that
+looks stuck or risky, any cross-project theme. Direct, no fluff, no markdown headers or bullets.`,
+      messages: [{ role: "user", content: `Waiting on you:\n${compact}` }],
     });
     return resp.content.filter((b: any) => b.type === "text").map((b: any) => b.text).join(" ").trim();
   } catch (e) {
@@ -42,46 +65,57 @@ cross-project theme. Direct, no fluff, no markdown headers or bullets. Plain pro
 }
 
 function renderItem(it: QueueRow): string {
+  const id = it.get("Idea ID");
   const field = (label: string, key: string) => {
     const v = it.get(key);
     return v ? `<p style="margin:6px 0"><strong>${label}:</strong> ${esc(v)}</p>` : "";
   };
-  const source = it.get("Source");
   const priority = it.get("Priority Score");
-  const tag = [source, priority ? `priority ${priority}` : ""].filter(Boolean).join(" · ");
+  const tag = [id, priority ? `priority ${priority}` : ""].filter(Boolean).join(" · ");
+  const preview = it.get("Preview URL");
+  const blocked = it.get("Blocked Reason");
+
   return `<div style="border:1px solid #E2E8F0;border-radius:10px;padding:16px;margin:12px 0">
     <div style="display:flex;justify-content:space-between;align-items:baseline">
       <h3 style="margin:0;color:#1A202C;font-size:16px">${esc(it.get("Title"))}</h3>
       <span style="color:#718096;font-size:13px;white-space:nowrap;padding-left:12px">${esc(tag)}</span>
     </div>
-    ${field("AI-Native Approach", "AI-Native Approach")}
+    ${blocked ? `<p style="margin:6px 0;color:#B23030"><strong>Blocked:</strong> ${esc(blocked)}</p>` : ""}
     ${field("Reasoning", "Reasoning")}
-    ${field("Open Questions", "Open Questions")}
-    ${field("Where it came from", "Evidence / Sources")}
-    ${field("Build Sequence", "Build Sequence")}
-    <p style="margin:12px 0 0"><a href="${rowLink(it.rowNum)}"
-       style="background:#3182CE;color:#fff;text-decoration:none;padding:8px 14px;border-radius:6px;font-size:14px">Review this idea →</a></p>
+    ${field("AI-Native Approach", "AI-Native Approach")}
+    ${preview ? `<p style="margin:6px 0"><strong>Preview:</strong> <a href="${esc(preview)}" style="color:#3182CE">${esc(preview)}</a></p>` : ""}
+    <p style="margin:12px 0 0"><a href="${resolveLink(id)}"
+       style="background:#3182CE;color:#fff;text-decoration:none;padding:8px 14px;border-radius:6px;font-size:14px">Open ${esc(id)} →</a></p>
   </div>`;
 }
 
 function renderEmail(items: QueueRow[], brief: string): string {
+  // Group by the ACTION needed (stage), most urgent first — that's what a doorbell should lead with.
   const groups = new Map<string, QueueRow[]>();
   for (const it of items) {
-    const p = it.get("Product") || "Unassigned";
-    (groups.get(p) ?? groups.set(p, []).get(p)!).push(it);
+    const st = it.get("Stage");
+    (groups.get(st) ?? groups.set(st, []).get(st)!).push(it);
   }
-  for (const list of groups.values()) list.sort((a, b) => Number(b.get("Priority Score")) - Number(a.get("Priority Score")));
+  const ordered = [...groups.entries()].sort((a, b) => {
+    const oa = STAGE_INFO[a[0]]?.order ?? 99, ob = STAGE_INFO[b[0]]?.order ?? 99;
+    return oa - ob;
+  });
 
-  const sections = [...groups.entries()].map(([product, list]) => `
+  const sections = ordered.map(([stage, list]) => {
+    const info = STAGE_INFO[stage] || { label: stage, instruction: "" };
+    list.sort((a, b) => Number(b.get("Priority Score")) - Number(a.get("Priority Score")));
+    return `
     <h2 style="color:#305D94;font-size:18px;margin:24px 0 4px;border-bottom:2px solid #305D94;padding-bottom:4px">
-      ${esc(product)} <span style="color:#A0AEC0;font-weight:normal;font-size:14px">(${list.length})</span></h2>
-    ${list.map(renderItem).join("")}`).join("");
+      ${esc(info.label)} <span style="color:#A0AEC0;font-weight:normal;font-size:14px">(${list.length})</span></h2>
+    ${info.instruction ? `<p style="color:#4A5568;font-size:13px;margin:4px 0 8px">${esc(info.instruction)}</p>` : ""}
+    ${list.map(renderItem).join("")}`;
+  }).join("");
 
   return `<div style="font-family:Inter,Arial,sans-serif;max-width:640px;margin:0 auto;color:#1A202C">
-    <h1 style="font-size:20px;color:#305D94">Pipeline review — ${items.length} awaiting you</h1>
+    <h1 style="font-size:20px;color:#305D94">Pipeline — ${items.length} waiting on you</h1>
     ${brief ? `<p style="background:#F7FAFC;border-left:3px solid #ED8936;padding:12px 14px;margin:12px 0;line-height:1.5">${esc(brief)}</p>` : ""}
-    <p style="color:#4A5568;font-size:14px;line-height:1.5">To act, open an idea and set the <strong>Review</strong> column
-      (Approved / Revise Design / Revise Research / Hold / Declined). When sending back, add <strong>Review Feedback</strong> — it travels to the redo.</p>
+    <p style="color:#4A5568;font-size:14px;line-height:1.5">Each item links to its resolve view. Act from your
+      <a href="${APP_BASE}/" style="color:#3182CE">Foundry board</a> (signed in) — verdicts and advances happen there.</p>
     ${sections}</div>`;
 }
 
@@ -102,16 +136,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   try {
     const { rows } = await readQueue(sheets);
-    const items = rows.filter((r) => r.get("Stage") === SOURCE_STAGE);
+    const items = rows.filter((r) => WAITING_STAGES.indexOf(r.get("Stage")) >= 0);
 
     if (items.length === 0) {
       res.setHeader("Content-Type", "text/html");
-      return res.status(200).send(`<p style="font-family:Arial">Nothing at "${SOURCE_STAGE}" right now — no digest sent.</p>`);
+      res.setHeader("X-Digest-Emailed", "false");
+      return res.status(200).send(`<p style="font-family:Arial">Nothing waiting on you right now — no digest sent. (Watching: ${WAITING_STAGES.join(", ")}.)</p>`);
     }
 
     const brief = await synthesize(items);
     const html = renderEmail(items, brief);
-    const sent = await sendViaResend(`Pipeline review — ${items.length} idea${items.length === 1 ? "" : "s"} awaiting you`, html);
+    const sent = await sendViaResend(`Pipeline — ${items.length} waiting on you`, html);
 
     res.setHeader("Content-Type", "text/html");
     res.setHeader("X-Digest-Emailed", String(sent));
