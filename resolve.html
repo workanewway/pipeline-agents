@@ -227,8 +227,10 @@ async function load(){
 // Pre-design "scope check" view. Two panes: the idea (editable) on the left, an AI
 // chat that pressure-tests the SCOPE on the right ("do we have the scope right?" — not
 // the open questions, which are design's job). "Rewrite idea from chat" folds the
-// scope decisions back into the idea before it goes to design. Reuses the existing
-// tokens/classes so it reads as the same product.
+// scope decisions back into the idea before it goes to design — including the
+// machine-readable locked scope ({in:[],out:[]}) the supervisor's Phase-2 drift check
+// will diff design output against. Reuses the existing tokens/classes so it reads as
+// the same product.
 function renderReadOnly(idea){
   const desc0     = (idea.reasoning || '').trim();
   const aiNative0 = (idea.aiNative || '').trim();
@@ -245,6 +247,8 @@ function renderReadOnly(idea){
           <textarea class="edit" id="editDesc" placeholder="Describe the idea…">${esc(desc0)}</textarea></div>
         <div class="block"><h2>AI-native approach</h2>
           <textarea class="edit" id="editAi" placeholder="How is this AI-native? (this feeds the design brief)">${esc(aiNative0)}</textarea></div>
+        <div class="block" id="scopeBlock" style="display:none"><h2 id="scopeHead">Locked scope</h2>
+          <div class="oq" id="scopeBox"></div></div>
       </div>
       <div class="actions">
         <span class="hint" id="runHint">Check the scope on the right, rewrite, then run design.</span>
@@ -276,14 +280,35 @@ function renderReadOnly(idea){
   const stateChip = document.getElementById('editState');
 
   let saved = { reasoning: desc0, aiNative: aiNative0 };   // last-saved values
+  let pendingScope = null;   // {in:[],out:[]} from the latest rewrite — unsaved until Save changes
+
+  // ---- locked-scope display (read-only render; the chat rewrite is the only writer) ----
+  const scopeBlock = document.getElementById('scopeBlock');
+  const scopeBox   = document.getElementById('scopeBox');
+  const scopeHead  = document.getElementById('scopeHead');
+  const renderScope = (scope, unsaved) => {
+    const inn = (scope && Array.isArray(scope.in))  ? scope.in  : [];
+    const out = (scope && Array.isArray(scope.out)) ? scope.out : [];
+    if(!inn.length && !out.length){ scopeBlock.style.display = 'none'; return; }
+    const fmt = (label, arr) => arr.length ? label + ':\n' + arr.map(b => '  \u2022 ' + b).join('\n') : '';
+    scopeBox.textContent = [fmt('IN', inn), fmt('OUT', out)].filter(Boolean).join('\n\n');
+    scopeHead.textContent = unsaved
+      ? 'Locked scope — not saved yet'
+      : 'Locked scope' + (scope.lockedAt ? ' · locked ' + String(scope.lockedAt).slice(0,10) : '');
+    scopeBlock.style.display = '';
+  };
+  renderScope(idea.lockedScope, false);
 
   const grow = el => { el.style.height='auto'; el.style.height = el.scrollHeight + 'px'; };
   // Current idea as edited (so the scope chat reasons over what's on screen, not stale state).
   // Open questions aren't shown or edited here — design forms them after scope is locked.
   const curIdea = () => ({ ...idea, reasoning: editDesc.value.trim(), aiNative: editAi.value.trim() });
+  // A pending locked scope counts as dirty: a rewrite can change ONLY the scope
+  // (identical description text), and Save must still be offered.
   const isDirty = () =>
     editDesc.value.trim() !== saved.reasoning ||
-    editAi.value.trim()   !== saved.aiNative;
+    editAi.value.trim()   !== saved.aiNative ||
+    pendingScope !== null;
   const refresh = () => {
     saveBtn.disabled = !isDirty();
     if(stateChip) stateChip.textContent = isDirty() ? 'unsaved changes' : 'editable · not yet in design';
@@ -293,11 +318,15 @@ function renderReadOnly(idea){
   async function saveEdits(){
     if(!isDirty()) return;
     const body = { id: idea.ideaId, reasoning: editDesc.value.trim(), aiNative: editAi.value.trim() };
+    if(pendingScope) body.lockedScope = pendingScope;
     const r = await fetch('/api/idea',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
     const j = await r.json();
     if(!j.ok) throw new Error(j.error||'save failed');
     saved = { reasoning: body.reasoning, aiNative: body.aiNative };
     idea.reasoning = body.reasoning; idea.aiNative = body.aiNative;
+    // The server stamps lockedAt and echoes the stored scope back — render the saved state.
+    if(j.lockedScope){ idea.lockedScope = j.lockedScope; }
+    if(pendingScope){ pendingScope = null; renderScope(idea.lockedScope, false); }
     refresh();
   }
 
@@ -402,9 +431,16 @@ function renderReadOnly(idea){
       const ni = j.idea || {};
       if(typeof ni.reasoning === 'string'){ editDesc.value = ni.reasoning; grow(editDesc); }
       if(typeof ni.aiNative === 'string'){ editAi.value = ni.aiNative; grow(editAi); }
+      // Machine-readable locked scope: held as PENDING (rendered, counted as dirty)
+      // until Save changes writes it — same review-then-save gate as the text.
+      if(ni.lockedScope && ((Array.isArray(ni.lockedScope.in) && ni.lockedScope.in.length) ||
+                            (Array.isArray(ni.lockedScope.out) && ni.lockedScope.out.length))){
+        pendingScope = { in: ni.lockedScope.in || [], out: ni.lockedScope.out || [] };
+        renderScope(pendingScope, true);
+      }
       refresh();
       if(iNote) iNote.textContent = 'rewritten · review & save';
-      iAdd('them', 'I rewrote the idea on the left from where we landed on scope \u2014 sharpened the description and the in/out boundary. Design will form the build questions from this once you Run design. Read it over; if it\u2019s right, Save changes, then Run design. If not, keep talking and rewrite again.');
+      iAdd('them', 'I rewrote the idea on the left from where we landed on scope \u2014 sharpened the description, the in/out boundary, and the locked-scope record below it (that\u2019s what design output gets checked against later). Read it over; if it\u2019s right, Save changes, then Run design. If not, keep talking and rewrite again.');
     }catch(e){ t.remove(); iShowErr(e.message); }
     iRewrite.disabled = false;
   }
