@@ -11,9 +11,11 @@
 //   { mode:'chat',    idea, messages } -> { ok, text }
 //       Pressure-test scope: one idea or several? too big / too thin? in-vs-out boundary?
 //       overlap with something already built? Stays out of "how to build it".
-//   { mode:'rewrite', idea, messages } -> { ok, idea:{ reasoning, aiNative } }
-//       Sharpen the Description + in/out boundary from the scope decisions. Does NOT
-//       form or touch open questions — those are created at the design step.
+//   { mode:'rewrite', idea, messages } -> { ok, idea:{ reasoning, aiNative, lockedScope } }
+//       Sharpen the Description + in/out boundary from the scope decisions, AND emit the
+//       machine-readable locked scope ({in:[], out:[]}) that the supervisor's Phase-2
+//       drift check diffs design output against. Does NOT form or touch open questions —
+//       those are created at the design step.
 //
 // Grounded: pulls the matching project context so the assistant reasons within the
 // product's REAL constraints (e.g. tenant-only auth, static HTML) rather than guessing.
@@ -160,21 +162,40 @@ ${ideaBlock(idea)}
 Return ONLY a JSON object, no prose, no markdown fences:
 {
   "reasoning": "the Description as it should now READ — a clean, standalone statement of what this idea IS and its in/out boundary, written as if it were the idea from the start. Describe ONLY the current idea. Do NOT narrate the change or reference the conversation: no 'scope narrowed', no 'this is NOT a footer', no 'we decided against X', no 'originally this was…'. State the in-scope work plainly and the out-of-scope boundary plainly, without framing it as things that were removed. Downstream (design) reads this as the spec, so it must stand on its own with no history baked in.",
-  "aiNative": "the AI-native approach note, updated only if a scope decision changed it; otherwise return it unchanged"
-}`;
+  "aiNative": "the AI-native approach note, updated only if a scope decision changed it; otherwise return it unchanged",
+  "lockedScope": {
+    "in": ["short imperative bullets (3-10 words each) naming what IS in scope — the concrete work this idea includes"],
+    "out": ["short bullets naming what is explicitly OUT of scope — boundaries the conversation actually drew"]
+  }
+}
+lockedScope rules: draw bullets STRICTLY from scope decisions reached in the conversation and the idea itself — never invent a boundary that was not discussed. Bullets are plain statements of the boundary, not narration ('no changes to vetting.html', not 'we decided not to touch vetting.html'). If the conversation drew no explicit exclusions, "out" may be an empty array. This object is machine-diffed against the design brief later, so keep each bullet concrete and checkable.`;
       const msgs = [...convo];
       if (msgs.length === 0 || msgs[msgs.length - 1].role !== "user") {
         msgs.push({ role: "user", content: "Sharpen the scope now from our discussion, as the JSON object specified." });
       }
-      const text = await callClaude(system, msgs, 2000);
+      const text = await callClaude(system, msgs, 2500);
       let parsed: any;
       try { parsed = JSON.parse(text.replace(/^```json\s*|\s*```$/g, "")); }
       catch { return res.status(200).json({ ok: false, error: "could not parse the rewrite — try again" }); }
+      // Sanitize the locked scope: arrays of non-empty strings only, bounded. Null when the
+      // model produced nothing valid — the save path then leaves the Locked Scope column
+      // untouched rather than writing garbage (empty column = "scope never explicitly
+      // locked", which Phase 2 treats as "skip the drift check", not as a drift).
+      const cleanList = (v: any): string[] =>
+        Array.isArray(v)
+          ? v.filter((x: any) => typeof x === "string" && x.trim()).map((x: string) => x.trim().slice(0, 160)).slice(0, 12)
+          : [];
+      const rawScope = parsed.lockedScope;
+      const lockedScope =
+        rawScope && typeof rawScope === "object" && (Array.isArray(rawScope.in) || Array.isArray(rawScope.out))
+          ? { in: cleanList(rawScope.in), out: cleanList(rawScope.out) }
+          : null;
       return res.status(200).json({
         ok: true,
         idea: {
           reasoning: typeof parsed.reasoning === "string" ? parsed.reasoning : (idea.reasoning || ""),
           aiNative: typeof parsed.aiNative === "string" ? parsed.aiNative : (idea.aiNative || ""),
+          lockedScope,
         },
       });
     }
