@@ -21,7 +21,7 @@
  * ---------------------------------------------------------------------------
  */
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { getSheets, readQueue, updateCells, lintIdea } from "../lib/pipeline-common.js";
+import { getSheets, readQueue, updateCells, lintIdea, parseLockedScope } from "../lib/pipeline-common.js";
 export const maxDuration = 30;
 const sheets = getSheets();
 const stamp = () => new Date().toISOString();
@@ -104,6 +104,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             title: row.get("Title"), description: row.get("Reasoning"),
             aiNative: row.get("AI-Native Approach"),
             brief: row.get("Design Brief"), sequence: body.buildSequence,
+            lockedScope: parseLockedScope(row.get("Locked Scope")),
           }),
           "Updated At": now,
           // Stage stays "Designing"; Review stays whatever it was. Approve is separate.
@@ -149,6 +150,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         description: updates["Reasoning"] ?? row.get("Reasoning"),
         aiNative: updates["AI-Native Approach"] ?? row.get("AI-Native Approach"),
         brief: row.get("Design Brief"), sequence: row.get("Build Sequence"),
+        lockedScope: lockedScopeOut ?? parseLockedScope(row.get("Locked Scope")),
       });
       updates["Updated At"] = now;
       await updateCells(sheets, row.rowNum, updates);
