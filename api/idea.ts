@@ -9,10 +9,15 @@
  *      The design-chat result. Writes the rewritten Build Sequence, marks the
  *      Open Questions RESOLVED, logs it. Leaves the row at "Designing" so Approve
  *      stays a separate, deliberate act (two-gate design).
- *   2. FIELD EDIT    { id, reasoning?, aiNative?, openQuestions?, title? }
+ *   2. FIELD EDIT    { id, reasoning?, aiNative?, openQuestions?, title?, lockedScope? }
  *      Pre-design intake tweaks from the read-only/editable card. Writes only the
  *      provided fields with NO "resolved" semantics — you're shaping the idea, not
  *      settling it. Logged plainly so the edit is still auditable.
+ *      lockedScope is the machine-readable {in:[],out:[]} the scope-chat rewrite
+ *      emits; it's serialized to the "Locked Scope" column with a SERVER-side
+ *      lockedAt stamp. An empty column means "scope never explicitly locked" —
+ *      the supervisor's Phase-2 drift check skips those rows rather than
+ *      inventing a baseline.
  * ---------------------------------------------------------------------------
  */
 import type { VercelRequest, VercelResponse } from "@vercel/node";
@@ -37,6 +42,14 @@ const EDITABLE: Record<string, string> = {
   title: "Title",
 };
 
+// Sanitize a locked-scope list: strings only, trimmed, bounded — mirrors the
+// sanitization idea-chat applies before returning it, so a hand-crafted POST
+// can't write garbage either.
+const cleanScopeList = (v: unknown): string[] =>
+  Array.isArray(v)
+    ? v.filter((x: any) => typeof x === "string" && x.trim()).map((x: string) => x.trim().slice(0, 160)).slice(0, 12)
+    : [];
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     if (req.method === "GET") {
@@ -45,6 +58,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const { rows } = await readQueue(sheets);
       const row = rows.find((r) => r.get("Idea ID") === id);
       if (!row) return res.status(404).json({ error: `no idea ${id}` });
+      // Locked Scope is stored as JSON; return it parsed (or null when absent/unparseable)
+      // so the client never has to guess the cell format.
+      const lockedScope = (() => {
+        try {
+          const v = JSON.parse(row.get("Locked Scope") || "");
+          return v && typeof v === "object" ? v : null;
+        } catch { return null; }
+      })();
       return res.status(200).json({
         ok: true,
         idea: {
@@ -54,6 +75,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           reasoning: row.get("Reasoning"), aiNative: row.get("AI-Native Approach"),
           openQuestions: row.get("Open Questions"),
           designBrief: row.get("Design Brief"), buildSequence: row.get("Build Sequence"),
+          lockedScope,
           reviewLog: row.get("Review Log"), rowNum: row.rowNum,
         },
       });
@@ -96,8 +118,27 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       for (const [key, col] of Object.entries(EDITABLE)) {
         if (typeof body[key] === "string") { updates[col] = body[key]; changed.push(key); }
       }
+
+      // Locked scope (from the scope-chat rewrite): sanitize, stamp lockedAt
+      // SERVER-side (the model doesn't own the clock), serialize to the column.
+      // Only written when at least one bullet survives sanitization — never
+      // overwrite an existing lock with an empty shell.
+      let lockedScopeOut: { in: string[]; out: string[]; lockedAt: string } | null = null;
+      if (body.lockedScope && typeof body.lockedScope === "object") {
+        const scope = {
+          in: cleanScopeList(body.lockedScope.in),
+          out: cleanScopeList(body.lockedScope.out),
+          lockedAt: now,
+        };
+        if (scope.in.length || scope.out.length) {
+          lockedScopeOut = scope;
+          updates["Locked Scope"] = JSON.stringify(scope);
+          changed.push("lockedScope");
+        }
+      }
+
       if (changed.length === 0) {
-        return res.status(400).json({ error: "need buildSequence, or an editable field (reasoning/aiNative/openQuestions/title)" });
+        return res.status(400).json({ error: "need buildSequence, or an editable field (reasoning/aiNative/openQuestions/title/lockedScope)" });
       }
       const entry = `[${now}] Idea edited pre-design (${changed.join(", ")}).`;
       updates["Review Log"] = log ? `${log}\n${entry}` : entry;
@@ -111,7 +152,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
       updates["Updated At"] = now;
       await updateCells(sheets, row.rowNum, updates);
-      return res.status(200).json({ ok: true, savedAt: now, mode: "edit", changed });
+      // Echo the stamped scope back so the client can render the saved state
+      // (with lockedAt) without a reload.
+      return res.status(200).json({
+        ok: true, savedAt: now, mode: "edit", changed,
+        ...(lockedScopeOut ? { lockedScope: lockedScopeOut } : {}),
+      });
     }
 
     return res.status(405).json({ error: "GET or POST only" });
