@@ -15,7 +15,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import {
   PROJECTS, AI_NATIVE_DIRECTIVE, Project, cronAuthorized,
   getSheets, readQueue, newRow, setCell, SHEET_ID, TAB, DEFAULT_MODEL,
-  readResearchEnabled, getRepoManifest, isGithubRepo,
+  readResearchEnabled, getRepoManifest, isGithubRepo, lintIdea,
 } from "../lib/pipeline-common.js";
 export const maxDuration = 60;
 
@@ -49,6 +49,8 @@ function rowFor(idea: IdeaCard, project: Project, ideaId: string, now: string): 
   setCell(row, "Reasoning", idea.reasoning ?? "");
   setCell(row, "AI-Native Approach", idea.aiNativeApproach ?? "");
   setCell(row, "Evidence / Sources", idea.sources ?? "");
+  // Deterministic consistency lint on the freshly enriched idea (name leakage, narration).
+  setCell(row, "Lint", lintIdea({ title: idea.title, description: idea.reasoning ?? "", aiNative: idea.aiNativeApproach ?? "" }));
   // Design questions are formed at the design step (after scope is locked), not here.
   setCell(row, "Open Questions", "");
   setCell(row, "Repo + Target", project.repo);
