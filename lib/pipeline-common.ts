@@ -479,6 +479,50 @@ export async function getRepoManifest(repo: string, branch: string): Promise<str
 }
 
 // ---------------------------------------------------------------------------
+// getFile — the CONTENTS layer. The manifest tells the pre-build stages which files EXIST;
+// this returns what's INSIDE one. Deliberately NOT autonomous: it's exposed as a chat TOOL so
+// a file is only read because a conversation turn asked for it (the human points; the model
+// doesn't graze the repo). Scope of access = scope of the question, by construction.
+// Guards: source files only, no path traversal, size-capped with a truncation marker, fails
+// soft (returns a note, never throws). Cached briefly like the manifest.
+// ---------------------------------------------------------------------------
+const _fileCache = new Map<string, { text: string; at: number }>();
+const FILE_TTL_MS = 5 * 60 * 1000;
+const FILE_MAX_CHARS = 12000; // keep a single chat turn bounded
+const FILE_READABLE = /\.(html|ts|tsx|js|jsx|sql|json|md|css|ya?ml)$/;
+
+export async function getFile(repo: string, branch: string, path: string): Promise<string> {
+  const slug = ghRepoSlug(repo);
+  const clean = String(path || "").replace(/^\/+/, "").trim();
+
+  if (!clean || /\.\./.test(clean)) return `(refused: invalid path "${path}")`;
+  if (!FILE_READABLE.test(clean)) return `(refused: "${clean}" is not a readable source file — source/config only)`;
+
+  const cacheKey = `${slug}@${branch}:${clean}`;
+  const cached = _fileCache.get(cacheKey);
+  if (cached && Date.now() - cached.at < FILE_TTL_MS) return cached.text;
+
+  const token = process.env.GITHUB_DISPATCH_TOKEN;
+  if (!token) return `(file unavailable: GITHUB_DISPATCH_TOKEN not set)`;
+
+  try {
+    const encPath = clean.split("/").map(encodeURIComponent).join("/");
+    const f = await ghJson(`https://api.github.com/repos/${slug}/contents/${encPath}?ref=${encodeURIComponent(branch)}`, token);
+    if (Array.isArray(f)) return `(refused: "${clean}" is a directory, not a file)`;
+    const content = f.encoding === "base64" ? Buffer.from(f.content, "base64").toString("utf8") : (f.content || "");
+    const total = content.length;
+    const body = total > FILE_MAX_CHARS
+      ? content.slice(0, FILE_MAX_CHARS) + `\n\n…(truncated — first ${FILE_MAX_CHARS} of ${total} chars)`
+      : content;
+    const text = `FILE ${clean} @ ${slug}#${branch} (${total} chars)\n\n${body}`;
+    _fileCache.set(cacheKey, { text, at: Date.now() });
+    return text;
+  } catch (err: any) {
+    return `(file unavailable: ${clean} — ${String(err?.message || err)})`;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Deterministic lint — the supervisor's SAFE half. Flags (never blocks, never edits)
 // the mechanical consistency mistakes that recurred in practice: name leakage, stale
 // rewrite-narration, and dead stage vocabulary. RULES ONLY — no LLM judgment, so there's
