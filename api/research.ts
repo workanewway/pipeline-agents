@@ -15,7 +15,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import {
   PROJECTS, AI_NATIVE_DIRECTIVE, Project, cronAuthorized,
   getSheets, readQueue, newRow, setCell, appendRows, RowDraft, DEFAULT_MODEL,
-  readResearchEnabled, getRepoManifest, isGithubRepo, lintIdea,
+  readResearchEnabled, getRepoManifest, getProjectContext, isGithubRepo, lintIdea,
 } from "../lib/pipeline-common.js";
 export const maxDuration = 60;
 
@@ -89,9 +89,14 @@ async function research(project: Project, existingTitles: string[]): Promise<Ide
   // `main` (shipped reality). Only for projects backed by a real GitHub repo; soft-fails.
   const manifest = isGithubRepo(project.repo) ? await getRepoManifest(project.repo, "main") : "";
 
+  // Canonical project context: fetched live from the build-target repo's CONTEXT.md (same
+  // branch as the manifest — shipped reality on `main`). Falls back to the thin static stub
+  // with a visible failure note; non-repo projects keep their static context as canonical.
+  const context = await getProjectContext(project, "main");
+
   const system = `You are ${role}.
 
-${project.context}
+${context}
 ${manifest ? `\n${manifest}\nGround your ideas in the surface above — don't propose what already exists, and describe ideas consistently with what's actually built.\n` : ""}
 ${AI_NATIVE_DIRECTIVE}
 
