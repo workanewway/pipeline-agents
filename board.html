@@ -207,6 +207,7 @@
   .chev:hover { background: var(--line); color: var(--ink-soft); }
   .chev svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; transition: transform .18s ease; }
   .card.expanded .chev svg { transform: rotate(180deg); }
+  .card.expanded .card-reason { -webkit-line-clamp: unset; display: block; overflow: visible; }
   .card-more { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line-soft); display: grid; gap: 7px; }
   .more-row { font-size: 11px; line-height: 1.45; }
   .more-row .k { font-family: var(--mono); font-size: 9px; text-transform: uppercase; letter-spacing: .05em; color: var(--ink-faint); display: block; margin-bottom: 1px; }
@@ -478,9 +479,9 @@
     }
     card.appendChild(foot);
 
-    // Expandable detail — the full design brief and the priority rationale, without opening
-    // the resolve view. Both come from the board API; if it doesn't send them the panel is
-    // empty and the chevron drops out.
+    // Expandable detail — the full description (reasoning) and the priority rationale, without
+    // opening the resolve view. Reasoning is on every card from Captured on; the card shows a
+    // 2-line preview and the chevron un-clamps it. Priority rationale comes from the board API.
     var more = el("div", "card-more"); more.hidden = true;
     function moreRow(label, value) {
       if (!value) return;
@@ -489,20 +490,21 @@
       row.appendChild(el("span", "v", String(value)));
       more.appendChild(row);
     }
-    moreRow("Design brief", idea.designBrief);
     moreRow("Priority rationale", idea.priorityRationale);
 
+    // Something to expand if there's a rationale panel OR a reasoning preview to un-clamp.
     var hasMore = more.childNodes.length > 0;
-    if (hasMore) {
-      card.appendChild(more);
+    if (hasMore) card.appendChild(more);
+
+    if (hasMore || idea.reasoning) {
       chev.addEventListener("click", function (e) {
         e.stopPropagation();
-        var open = card.classList.toggle("expanded");
-        more.hidden = !open;
+        var open = card.classList.toggle("expanded");   // .expanded un-clamps .card-reason
+        if (hasMore) more.hidden = !open;
         chev.setAttribute("aria-expanded", String(open));
       });
     } else {
-      chev.remove();  // nothing to expand on this card
+      chev.remove();  // no reasoning and no rationale — nothing to show
     }
 
     return card;
