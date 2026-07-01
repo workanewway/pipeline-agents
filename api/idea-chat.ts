@@ -17,9 +17,12 @@
 //
 // Grounded: pulls the matching project context so the assistant reasons within the
 // product's REAL constraints (e.g. tenant-only auth, static HTML) rather than guessing.
+// The context itself is canonical: fetched live from the repo's CONTEXT.md via
+// getProjectContext (main — scope reasons against shipped reality), falling back to
+// the thin static stub with a visible failure note.
 
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { projectByName, DEFAULT_MODEL, getFile, isGithubRepo } from "../lib/pipeline-common.js";
+import { projectByName, DEFAULT_MODEL, getFile, getProjectContext, isGithubRepo } from "../lib/pipeline-common.js";
 export const maxDuration = 60;
 
 const MODEL = DEFAULT_MODEL; // sonnet — good for conversational reasoning + a structured rewrite
@@ -131,8 +134,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (!idea) return res.status(400).json({ ok: false, error: "missing idea" });
 
     const project = projectByName(idea.product);
+    // Canonical context from the repo's CONTEXT.md at `main` — the scope chat grounds against
+    // SHIPPED reality, same branch as its read_file tool. Fail-soft to the static stub.
+    const context = project ? await getProjectContext(project, "main") : "";
     const projectNote = project
-      ? `This idea targets "${project.name}". Answer within these REAL constraints — never propose an answer that assumes a capability the product doesn't have:\n${project.context}`
+      ? `This idea targets "${project.name}". Answer within these REAL constraints — never propose an answer that assumes a capability the product doesn't have:\n${context}`
       : `Answer within realistic, conservative product constraints; do not assume infrastructure that may not exist.`;
 
     const convo = (Array.isArray(messages) ? messages : []).filter(
@@ -210,8 +216,8 @@ CURRENT IDEA:
 ${ideaBlock(idea)}`;
     const msgs = convo.length ? convo : [{ role: "user", content: "Let's start — is the scope of this idea right?" }];
     // Scope grounds against SHIPPED reality → the idea's repo @ main. Non-github/design-only
-    // projects simply won't offer the read_file tool (readable=false).
-    const project = projectByName(idea.product);
+    // projects simply won't offer the read_file tool (readable=false). Uses the `project`
+    // resolved at the top of the handler.
     const { text, reads } = await callClaudeWithFiles(system, msgs, 1200, project?.repo, "main");
     return res.status(200).json({ ok: true, text, reads });
   } catch (err: any) {
