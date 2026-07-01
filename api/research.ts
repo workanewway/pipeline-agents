@@ -14,7 +14,7 @@ import type { VercelRequest, VercelResponse } from "@vercel/node";
 import Anthropic from "@anthropic-ai/sdk";
 import {
   PROJECTS, AI_NATIVE_DIRECTIVE, Project, cronAuthorized,
-  getSheets, readQueue, newRow, setCell, SHEET_ID, TAB, DEFAULT_MODEL,
+  getSheets, readQueue, newRow, setCell, appendRows, RowDraft, DEFAULT_MODEL,
   readResearchEnabled, getRepoManifest, isGithubRepo, lintIdea,
 } from "../lib/pipeline-common.js";
 export const maxDuration = 60;
@@ -37,7 +37,7 @@ interface IdeaCard {
 
 const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 
-function rowFor(idea: IdeaCard, project: Project, ideaId: string, now: string): string[] {
+function rowFor(idea: IdeaCard, project: Project, ideaId: string, now: string): RowDraft {
   const row = newRow();
   setCell(row, "Idea ID", ideaId);
   setCell(row, "Title", idea.title);
@@ -153,7 +153,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const { titlesByProduct, nextNum } = await existingByProject();
     const enabled = await readResearchEnabled(sheets);
     let n = nextNum;
-    const rows: string[][] = [];
+    const rows: RowDraft[] = [];
     const summary: Record<string, number> = {};
     const skipped: string[] = [];
 
@@ -173,12 +173,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     if (rows.length) {
-      await sheets.spreadsheets.values.append({
-        spreadsheetId: SHEET_ID,
-        range: `${TAB}!A:AB`,
-        valueInputOption: "USER_ENTERED",
-        requestBody: { values: rows },
-      });
+      await appendRows(sheets, rows);
     }
 
     return res.status(200).json({ ok: true, created: rows.length, perProject: summary, skipped });
