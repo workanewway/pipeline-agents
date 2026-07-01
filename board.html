@@ -184,6 +184,24 @@
   .advance:hover { background: #2c74bb; }
   .blocked-note { margin-top: 7px; font-size: 10.5px; color: #b23030; background: rgba(229,62,62,.07); border-radius: 6px; padding: 5px 7px; line-height: 1.35; }
 
+  /* ── Card expand (chevron) ─────────────────────────────── */
+  .chev {
+    width: 20px; height: 20px; flex: none; display: inline-flex; align-items: center;
+    justify-content: center; padding: 0; cursor: pointer; background: transparent;
+    border: 0; border-radius: 5px; color: var(--ink-faint);
+    transition: background .12s ease, color .12s ease;
+  }
+  .chev:hover { background: var(--line); color: var(--ink-soft); }
+  .chev svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; transition: transform .18s ease; }
+  .card.expanded .chev svg { transform: rotate(180deg); }
+  .card.expanded .card-reason { -webkit-line-clamp: unset; display: block; overflow: visible; }
+  .card-more { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line-soft); display: grid; gap: 7px; }
+  .more-row { font-size: 11px; line-height: 1.45; }
+  .more-row .k { font-family: var(--mono); font-size: 9px; text-transform: uppercase; letter-spacing: .05em; color: var(--ink-faint); display: block; margin-bottom: 1px; }
+  .more-row .v { color: var(--ink); white-space: pre-wrap; word-break: break-word; }
+  .more-lint { font-size: 10.5px; line-height: 1.4; color: #9a6f12; background: rgba(214,158,46,.12); border-radius: 6px; padding: 5px 7px; }
+  .more-lint .k { color: #9a6f12; font-family: var(--mono); font-size: 9px; text-transform: uppercase; letter-spacing: .05em; display: block; margin-bottom: 1px; }
+
   /* ── States ────────────────────────────────────────────── */
   .state { padding: 60px 20px; text-align: center; color: var(--ink-soft); }
   .state h2 { font-size: 15px; font-weight: 600; color: var(--ink); margin: 0 0 6px; }
@@ -390,6 +408,13 @@
       fill.style.width = Math.max(0, Math.min(100, pNum)) + "%"; bar.appendChild(fill); pri.appendChild(bar);
       top.appendChild(pri);
     }
+    var chev = el("button", "chev no-nav");
+    chev.type = "button";
+    chev.setAttribute("aria-expanded", "false");
+    chev.setAttribute("aria-label", "Show more detail for " + (idea.id || "this idea"));
+    chev.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg>';
+    if (isNaN(pNum)) chev.style.marginLeft = "auto";  // keep it right-aligned when there's no priority bar
+    top.appendChild(chev);
     card.appendChild(top);
 
     card.appendChild(el("p", "card-title", idea.title || "(untitled)"));
@@ -430,6 +455,42 @@
       foot.appendChild(pb);
     }
     card.appendChild(foot);
+
+    // Expandable detail — more context inline, without opening the resolve view. Renders
+    // whichever fields the board API provides; any it doesn't return are simply omitted.
+    var more = el("div", "card-more"); more.hidden = true;
+    function moreRow(label, value, cls) {
+      if (!value) return;
+      var row = el("div", cls || "more-row");
+      row.appendChild(el("span", "k", label));
+      row.appendChild(el("span", "v", String(value)));
+      more.appendChild(row);
+    }
+    var seq = idea.buildSequence || idea.sequence;
+    moreRow("Product", idea.product);
+    moreRow("Stage", idea.stage);
+    moreRow("AI-native approach", idea.aiNative || idea.aiNativeApproach);
+    moreRow("Open questions", idea.openQuestions);
+    moreRow("Build sequence", seq ? (seq.length > 600 ? seq.slice(0, 600) + " …" : seq) : "");
+    moreRow("Priority rationale", idea.priorityRationale);
+    if (idea.lint) moreRow("Lint", idea.lint, "more-lint");
+
+    var hasMore = more.childNodes.length > 0;
+    if (hasMore) card.appendChild(more);
+
+    // The chevron un-clamps the reasoning and reveals the panel. If there's genuinely nothing
+    // extra to show (no reasoning, no detail fields), drop the chevron rather than leave a no-op.
+    if (hasMore || idea.reasoning) {
+      chev.addEventListener("click", function (e) {
+        e.stopPropagation();
+        var open = card.classList.toggle("expanded");
+        if (hasMore) more.hidden = !open;
+        chev.setAttribute("aria-expanded", String(open));
+      });
+    } else {
+      chev.remove();
+    }
+
     return card;
   }
 
