@@ -142,7 +142,7 @@ export const COLUMNS = [
   "Review", "Review Feedback", "Revisions", "Review Log", "Decided At",
   "Build Status", "Test Results", "Preview URL", "Prod URL", "PR / Commit",
   "Blocked Reason", "Created At", "Updated At",
-  "Migration Files", "Pending Migration", "Build Report", "Lint",
+  "Migration Files", "Pending Migration", "Build Report", "Lint", "Locked Scope",
 ] as const;
 
 export type ColumnName = (typeof COLUMNS)[number];
