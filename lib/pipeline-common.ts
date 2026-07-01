@@ -60,56 +60,28 @@ export const PROJECTS: Project[] = [
   {
     name: "Broker Platform",
     kind: "product",
-    context: `Your standalone multi-tenant SaaS for freight brokers. Produces court-ready,
-tamper-evident records of "reasonable care" in carrier selection - a compliance tool after
-Montgomery v. Caribe Transport II (May 2026) let safety-based negligent-selection claims through
-the FAAAA preemption safety exception. Sold broadly to SMB brokers; not built for any single broker.
-
-NO PRODUCT NAME. This product has NO finalized public brand name. NEVER invent, assume, or render a
-product/brand name (no "FreightVet", no codename) in any label, placeholder, header, copy, or UI string.
-Refer to it generically ("the platform"). Likewise NEVER surface a tenant/client's name in product UI.
-Apply only neutral, professional styling — never a name.
-
-ARCHITECTURE — design WITHIN this exact stack; do not substitute a different one.
-- Backend: serverless TypeScript functions on Vercel, one file per route under api/ in
-  github.com/workanewway/vetting-platform-api (e.g. api/vettings/[id]/assess.ts). NOT Next.js, NOT an
-  app/ router, NOT React Server Components. New endpoints follow the canonical apply.ts pattern:
-  handler signature (req, _res, ctx); wrap with withHandler(handler, { methods: [...] }); use
-  getSupabase() (never a bare client); throw errors.xxx() (never sendError); return plain objects
-  (never res.json()); EVERY relative import carries an explicit .js extension; long jobs set
-  "export const maxDuration". Do NOT import @anthropic-ai/sdk inside an endpoint — call the Anthropic
-  REST API with native fetch.
-- Data: Supabase (Postgres) with row-level security; carriers are GLOBAL, but vettings / documents /
-  audit are TENANT-scoped (scoped by current_tenant_id() — don't break tenant isolation). Cloudflare R2
-  for documents; FMCSA QCMobile as the authoritative carrier source. The vettings table's "conversation"
-  column is POLYMORPHIC (classic chat turns AND type:'file' event turns — any iterator must handle both).
-- Auth: TENANT-level only. A tenant access code (hashed in access_code_hash) yields an API key the
-  browser stores and sends on each call. There is NO per-user auth — no auth.users, no user_id
-  ownership, no cookie sessions, no createServerClient, no login.html. Per-user auth (JWT alongside the
-  API key, login.html replacing connect.html) is a DEFERRED roadmap item: a design MUST NOT assume it
-  exists. Scope ownership by tenant, not user.
-- Frontend: static HTML pages on GoDaddy cPanel at workanewway.com, plain vanilla JS calling the API
-  with the tenant key (no React, no Next.js, no hooks, no component framework, no Vercel AI SDK). The
-  pages are mapped below.
-
-SURFACE MAP — target the right file from this map; do NOT infer the file from the idea's wording. The
-similar names (workspace.html / vetting.html / vettings.html) are a trap. If an idea names a surface
-that is NOT in this map, ask "which file?" as an open question rather than picking one.
-- workspace.html — the carrier-vetting WORKSPACE: a SINGLE-vetting view (one carrier / one vetting at a
-  time; ONE conversation thread per vetting — NOT a multi-pane or tabbed multi-carrier view). It is the
-  current surface where a vetting is reviewed. THIS is where the "✦ Ask AI" conversation dock lives
-  (backed by the vettings.conversation column), alongside the AI recommendation band, severity-tiered
-  findings, and the data-sources rail. ANY change to the assistant / chat / conversation dock targets
-  workspace.html.
-- connect.html — access-code gate: mints/stores the tenant API key, then redirects.
-- vetting.html — the linear vetting walkthrough / flow (backend-wired).
-- vettings.html — records retrieval: search, detail, re-download the compliance PDF.
-- DO NOT TOUCH vetting_walkthrough.html or general_proxy.php — that is the OLD credential-free demo.
-
-BUILD ON WHAT EXISTS — do not reinvent it. The "✦ Ask AI" dock (workspace.html, backed by
-vettings.conversation) already works. Ideas about that assistant MODIFY the existing dock and its
-endpoints in place — never spec a new conversations/messages data model or a parallel chat system.
-Internal test tenants are "bivium" and "acme" (not real customers).`,
+    // FALLBACK STUB ONLY. The canonical context for this project is CONTEXT.md at the root of
+    // the build-target repo, fetched live by getProjectContext() below. This stub is
+    // DELIBERATELY thin: if the fetch fails, agents should degrade VISIBLY (hold invariants,
+    // defer structure) rather than silently reasoning from a rich-but-stale copy — stale-copy
+    // drift is the exact failure this design exists to kill. Do not grow this stub.
+    context: `FALLBACK STUB — canonical project context is CONTEXT.md at the root of
+github.com/workanewway/vetting-platform-api, normally fetched live. If you are reading THIS
+text in a prompt, that fetch FAILED and you are running with degraded context. Hold these
+invariants and defer anything structural:
+- Standalone multi-tenant SaaS for freight brokers broadly; NOT built for any single broker.
+- NO PRODUCT NAME exists. Never invent or render a product/brand name; never surface a
+  tenant name in customer-facing copy or UI.
+- Stack: serverless TypeScript on Vercel (one file per api/ route, canonical apply.ts
+  pattern, native fetch to the Anthropic REST API — never the SDK inside an endpoint);
+  Supabase Postgres with RLS (carriers GLOBAL; vettings/documents/audit TENANT-scoped);
+  Cloudflare R2 for documents; FMCSA QCMobile; static vanilla-JS pages on cPanel (no
+  frameworks).
+- Auth is TENANT-level only (access code -> API key). NO per-user auth exists; designs must
+  not assume it.
+- Internal test tenants: "bivium" and "acme" (not real customers).
+Do NOT make surface-map or file-level design decisions from this stub. Name the missing
+canonical context as an open question / dependency instead of guessing.`,
     focus: [
       "FMCSA / freight broker compliance regulation changes",
       "negligent carrier selection liability case law and broker litigation",
@@ -520,6 +492,31 @@ export async function getFile(repo: string, branch: string, path: string): Promi
   } catch (err: any) {
     return `(file unavailable: ${clean} — ${String(err?.message || err)})`;
   }
+}
+
+// ---------------------------------------------------------------------------
+// getProjectContext — canonical-context resolution. For repo-backed projects, the canonical
+// context lives IN the build-target repo (CONTEXT.md at root) so it travels with the code,
+// follows the same branch semantics as the manifest (research reads main, design reads
+// staging), and can be updated by the very builds that change the platform's shape. The
+// static Project.context string is a thin FALLBACK stub — deliberately minimal, so a failed
+// fetch degrades VISIBLY instead of silently serving a rich-but-stale copy (the drift this
+// design exists to kill). Non-repo projects (client engagements) keep their static context
+// as canonical.
+// Reuses getFile: same token, same 5-min cache, same guards, fail-soft by construction.
+// NOTE: getFile truncates at 12,000 chars — keep CONTEXT.md under ~11,000.
+// ---------------------------------------------------------------------------
+export const PROJECT_CONTEXT_FILE = "CONTEXT.md";
+
+export async function getProjectContext(p: Project, branch = "main"): Promise<string> {
+  if (!isGithubRepo(p.repo)) return p.context; // no repo -> static context IS canonical
+  const file = await getFile(p.repo, branch, PROJECT_CONTEXT_FILE);
+  // Success: getFile returns "FILE <path> @ <slug>#<branch> …" — keep the provenance header,
+  // it tells the model (and anyone reading the prompt) exactly which version it's seeing.
+  if (file.startsWith("FILE ")) return file;
+  // Failure: getFile returned a "(…)" note. Fall back to the stub and surface the failure
+  // INSIDE the context so the degradation is legible, not silent.
+  return `${p.context}\n\n(canonical ${PROJECT_CONTEXT_FILE} unavailable on ${p.repo}#${branch}: ${file})`;
 }
 
 // ---------------------------------------------------------------------------
