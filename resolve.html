@@ -128,6 +128,7 @@
       <div class="col-head"><span>The spec</span><span id="specNote"></span></div>
       <div class="col-body">
         <div class="block"><h2>Open questions to resolve</h2><div class="oq" id="openQ">—</div></div>
+        <div class="block" id="dScopeBlock" style="display:none"><h2>Locked scope</h2><div class="oq" id="dScopeBox"></div></div>
         <div class="block"><h2>Design brief</h2><div class="prose" id="brief">—</div></div>
         <div class="block"><h2>Build sequence</h2><div class="seq" id="seq">—</div></div>
         <div class="block verdict" id="verdictBlock" style="display:none">
@@ -216,6 +217,16 @@ async function load(){
     $('verdictBlock').style.display = '';   // design workspace: the human's actions live here now
     setVerdictMode(idea.stage);             // ...but WHICH actions depend on the stage
     $('openQ').textContent = idea.openQuestions || '(none recorded)';
+    // Surface the locked scope BESIDE the design output — the human's drift check
+    // happens here, at the Approve decision, with the boundary in view. No lock,
+    // no block: an unlocked idea isn't drift-checked against an invented baseline.
+    const ls = idea.lockedScope;
+    if(ls && ((Array.isArray(ls.in)&&ls.in.length) || (Array.isArray(ls.out)&&ls.out.length))){
+      const fmt = (label, arr) => (Array.isArray(arr)&&arr.length) ? label + ':\n' + arr.map(b=>'  \u2022 ' + b).join('\n') : '';
+      $('dScopeBox').textContent = [fmt('IN', ls.in), fmt('OUT', ls.out)].filter(Boolean).join('\n\n')
+        + (ls.lockedAt ? '\n\nlocked ' + String(ls.lockedAt).slice(0,10) : '');
+      $('dScopeBlock').style.display = '';
+    }
     $('brief').textContent = idea.designBrief || '(no brief yet — run design-brief first)';
     $('seq').textContent = idea.buildSequence || '(no build sequence yet)';
     addMsg('assistant',
