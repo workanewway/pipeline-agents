@@ -158,10 +158,11 @@ paying client.`,
 
 export const projectByName = (name: string) => PROJECTS.find((p) => p.name === name);
 
-// Column contract (A..AF). Writers rely on order; readers map by header.
-// NOTE: this MUST match the Queue tab's real header row, left to right, exactly — writers
-// address cells by POSITION in this array. Migration Files / Pending Migration / Build Report
-// were added to the sheet by hand and belong here so the positions line up (Lint is AF).
+// Column contract. COLUMNS now serves TWO narrower jobs: it's the source of the ColumnName
+// TYPE (so callers get autocomplete + typo-checking), and it's the FALLBACK order if the live
+// header can't be read. It is NO LONGER the authority on where a column physically sits — that
+// comes from the live header (see liveColumnMap). So a column added to the sheet by hand no
+// longer has to be mirrored here for writes to land correctly; add it here only to get the type.
 export const COLUMNS = [
   "Idea ID", "Title", "Stage", "Source", "Product", "Priority Score",
   "Priority Rationale", "Reasoning", "AI-Native Approach", "Evidence / Sources",
@@ -173,6 +174,8 @@ export const COLUMNS = [
 ] as const;
 
 export type ColumnName = (typeof COLUMNS)[number];
+// Static/positional index — kept for the fallback path only. Do NOT use it to place writes;
+// use the live header via liveColumnMap so hand-added columns work. -1 if unknown.
 export const colIndex = (name: ColumnName) => COLUMNS.indexOf(name);
 
 export function a1(zeroBasedColIndex: number): string {
@@ -186,10 +189,71 @@ export function a1(zeroBasedColIndex: number): string {
   return s;
 }
 
-export const newRow = (): string[] => new Array(COLUMNS.length).fill("");
-export function setCell(row: string[], name: ColumnName, value: string): string[] {
-  row[colIndex(name)] = value;
-  return row;
+// ---------------------------------------------------------------------------
+// Live column map — the WRITE side resolves each column's position from the ACTUAL header row
+// of the Queue tab, not from a hardcoded array. This is the fix for a recurring class of bug:
+// a column added to the sheet by hand (Build Report, Lint, Migration Files…) used to require a
+// matching edit to COLUMNS, or writes would error ("Queue!9") or — worse — land in the WRONG
+// column silently. Now they just work, in whatever order the sheet has them.
+// Cached briefly (the header changes rarely). If the header read fails, we fall back to the
+// static COLUMNS order so a transient error degrades to the old behavior rather than dropping
+// every write.
+// ---------------------------------------------------------------------------
+let _colCache: { at: number; map: Map<string, number> } | null = null;
+const COL_TTL_MS = 60_000;
+
+async function liveColumnMap(sheets: Sheets): Promise<Map<string, number>> {
+  const now = Date.now();
+  if (_colCache && now - _colCache.at < COL_TTL_MS) return _colCache.map;
+  try {
+    const res = await sheets.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: `${TAB}!A1:AZ1` });
+    const headers = (res.data.values?.[0] ?? []).map((h: string) => String(h).trim());
+    const map = new Map<string, number>();
+    headers.forEach((h, i) => { if (h) map.set(h, i); });
+    if (map.size === 0) throw new Error("empty header row");
+    _colCache = { at: now, map };
+    return map;
+  } catch (e: any) {
+    console.error(`[liveColumnMap] live header read failed (${String(e?.message || e)}); falling back to static COLUMNS`);
+    const map = new Map<string, number>();
+    COLUMNS.forEach((h, i) => map.set(h, i));
+    return map; // not cached — retry the live read next call
+  }
+}
+
+/** Drop the cached header (call after adding a column to the sheet mid-session). */
+export function invalidateColumnCache() { _colCache = null; }
+
+// A new-row draft keyed by column NAME (not position). Serialized to sheet order at append time
+// via the live header, so row-building no longer depends on column position either.
+export type RowDraft = Partial<Record<ColumnName, string>>;
+export const newRow = (): RowDraft => ({});
+export function setCell(draft: RowDraft, name: ColumnName, value: string): RowDraft {
+  draft[name] = value;
+  return draft;
+}
+
+/** Append new rows, placing each field by the LIVE header position. Full-width, order-proof. */
+export async function appendRows(sheets: Sheets, drafts: RowDraft[]) {
+  if (!drafts.length) return;
+  const cmap = await liveColumnMap(sheets);
+  const width = Math.max(...Array.from(cmap.values())) + 1;
+  const lastCol = a1(width - 1);
+  const values = drafts.map((d) => {
+    const arr = new Array(width).fill("");
+    for (const [name, val] of Object.entries(d)) {
+      const i = cmap.get(name);
+      if (i === undefined) { console.error(`[appendRows] "${name}" not in the live header — dropped from the new row.`); continue; }
+      arr[i] = val ?? "";
+    }
+    return arr;
+  });
+  await sheets.spreadsheets.values.append({
+    spreadsheetId: SHEET_ID,
+    range: `${TAB}!A:${lastCol}`,
+    valueInputOption: "USER_ENTERED",
+    requestBody: { values },
+  });
 }
 
 export function getSheets(readonly = false) {
@@ -227,17 +291,18 @@ export async function readQueue(sheets: Sheets): Promise<{ headers: string[]; ro
 }
 
 export async function updateCells(sheets: Sheets, rowNum: number, updates: Partial<Record<ColumnName, string>>) {
+  const cmap = await liveColumnMap(sheets);
   const data = Object.entries(updates)
-    .filter(([name]) => {
-      const ok = colIndex(name as ColumnName) >= 0;
-      // An unknown column name would build an unparseable range (e.g. "Queue!9") and fail the
-      // ENTIRE batch — every other field with it. Skip it loudly instead; the sheet is missing
-      // the header, or it's spelled differently than COLUMNS.
-      if (!ok) console.error(`[updateCells] unknown column "${name}" — not in COLUMNS; skipped. Add the header + the COLUMNS entry.`);
-      return ok;
+    .filter(([name, value]) => {
+      if (value === undefined) return false;
+      const has = cmap.has(name);
+      // Unknown column: skip loudly instead of building an unparseable range that would fail the
+      // ENTIRE batch. Means the header is missing from the sheet or spelled differently.
+      if (!has) console.error(`[updateCells] "${name}" not in the live Queue header — skipped. Add the header to the sheet.`);
+      return has;
     })
     .map(([name, value]) => ({
-      range: `${TAB}!${a1(colIndex(name as ColumnName))}${rowNum}`,
+      range: `${TAB}!${a1(cmap.get(name)!)}${rowNum}`,
       values: [[value as string]],
     }));
   if (!data.length) return;
