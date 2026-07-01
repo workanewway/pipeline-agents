@@ -64,6 +64,8 @@
   .msg.you{align-self:flex-end;background:var(--you);border-bottom-right-radius:4px}
   .msg.them{align-self:flex-start;background:var(--them);border-bottom-left-radius:4px;color:var(--ink-dim)}
   .msg.sys{align-self:center;font-size:11.5px;color:var(--ink-faint);background:none;padding:2px}
+  .reads{align-self:flex-start;font-size:11px;color:var(--ink-faint);font-family:var(--mono,ui-monospace,monospace);
+    background:none;padding:1px 4px 4px;margin-top:-4px}
   .typing{align-self:flex-start;color:var(--ink-faint);font-size:12px;padding:4px 14px}
 
   .composer{flex:none;border-top:1px solid var(--line);padding:12px;background:var(--panel);
@@ -336,6 +338,16 @@ function renderReadOnly(idea){
     const d = document.createElement('div'); d.className = 'msg ' + cls; d.textContent = text;
     iThread.appendChild(d); iThread.scrollTop = iThread.scrollHeight; return d;
   };
+  // Surface which files the scope chat read to answer — the read was on-demand (a turn asked
+  // for it), so it should be visible, not hidden. Renders a small line under the reply.
+  const iReads = (reads) => {
+    if(!Array.isArray(reads) || !reads.length) return;
+    const uniq = reads.filter((p, i) => p && reads.indexOf(p) === i);
+    const d = document.createElement('div');
+    d.className = 'reads';
+    d.textContent = '\uD83D\uDCC4 read: ' + uniq.join(', ');
+    iThread.appendChild(d); iThread.scrollTop = iThread.scrollHeight;
+  };
   const iShowErr = m => { iErr.style.display='block'; iErr.textContent = m; };
   const iClearErr = () => { iErr.style.display='none'; };
 
@@ -350,6 +362,7 @@ function renderReadOnly(idea){
       const j = await r.json(); t.remove();
       if(!j.ok) throw new Error(j.error||'open failed');
       iAdd('them', j.text);
+      iReads(j.reads);
       chat = seed.concat([{ role:'assistant', content:j.text }]);
     }catch(e){
       t.remove();
@@ -372,7 +385,7 @@ function renderReadOnly(idea){
         body: JSON.stringify({ mode:'chat', idea: curIdea(), messages: chat })});
       const j = await r.json(); t.remove();
       if(!j.ok) throw new Error(j.error||'chat failed');
-      iAdd('them', j.text); chat.push({ role:'assistant', content:j.text });
+      iAdd('them', j.text); iReads(j.reads); chat.push({ role:'assistant', content:j.text });
     }catch(e){ t.remove(); iShowErr(e.message); }
     iSend.disabled = false; iInput.focus();
   }
