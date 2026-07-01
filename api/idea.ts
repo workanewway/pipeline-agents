@@ -7,7 +7,7 @@
  * POST has two modes, chosen by payload:
  *   1. RESOLVE SAVE  { id, buildSequence }
  *      The design-chat result. Writes the rewritten Build Sequence, marks the
- *      Open Questions RESOLVED, logs it. Leaves the row at "In Review" so Approve
+ *      Open Questions RESOLVED, logs it. Leaves the row at "Designing" so Approve
  *      stays a separate, deliberate act (two-gate design).
  *   2. FIELD EDIT    { id, reasoning?, aiNative?, openQuestions?, title? }
  *      Pre-design intake tweaks from the read-only/editable card. Writes only the
@@ -16,7 +16,7 @@
  * ---------------------------------------------------------------------------
  */
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { getSheets, readQueue, updateCells } from "../lib/pipeline-common.js";
+import { getSheets, readQueue, updateCells, lintIdea } from "../lib/pipeline-common.js";
 export const maxDuration = 30;
 const sheets = getSheets();
 const stamp = () => new Date().toISOString();
@@ -78,8 +78,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           "Build Sequence": body.buildSequence,
           "Open Questions": markResolved(row.get("Open Questions"), now),
           "Review Log": log ? `${log}\n${entry}` : entry,
+          Lint: lintIdea({
+            title: row.get("Title"), description: row.get("Reasoning"),
+            aiNative: row.get("AI-Native Approach"),
+            brief: row.get("Design Brief"), sequence: body.buildSequence,
+          }),
           "Updated At": now,
-          // Stage stays "In Review"; Review stays whatever it was. Approve is separate.
+          // Stage stays "Designing"; Review stays whatever it was. Approve is separate.
         });
         return res.status(200).json({ ok: true, savedAt: now, mode: "resolve" });
       }
@@ -96,6 +101,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
       const entry = `[${now}] Idea edited pre-design (${changed.join(", ")}).`;
       updates["Review Log"] = log ? `${log}\n${entry}` : entry;
+      // Re-lint the RESULTING state — a rewrite lands here, so this catches narration in the
+      // new description, name leakage, etc. Effective value = the edit if present, else current.
+      updates["Lint"] = lintIdea({
+        title: updates["Title"] ?? row.get("Title"),
+        description: updates["Reasoning"] ?? row.get("Reasoning"),
+        aiNative: updates["AI-Native Approach"] ?? row.get("AI-Native Approach"),
+        brief: row.get("Design Brief"), sequence: row.get("Build Sequence"),
+      });
       updates["Updated At"] = now;
       await updateCells(sheets, row.rowNum, updates);
       return res.status(200).json({ ok: true, savedAt: now, mode: "edit", changed });
