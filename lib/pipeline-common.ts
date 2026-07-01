@@ -399,3 +399,54 @@ export async function getRepoManifest(repo: string, branch: string): Promise<str
     return `${header}\n(manifest unavailable: ${String(err?.message || err)} — reasoning from context only)`;
   }
 }
+
+// ---------------------------------------------------------------------------
+// Deterministic lint — the supervisor's SAFE half. Flags (never blocks, never edits)
+// the mechanical consistency mistakes that recurred in practice: name leakage, stale
+// rewrite-narration, and dead stage vocabulary. RULES ONLY — no LLM judgment, so there's
+// no supervisor-agent that can itself drift. Writes a short string to the "Lint" column.
+// Scope-drift detection (needs a machine-readable locked-scope field) and title/description
+// coherence are deliberately NOT here — those are phase 2.
+//
+// EDIT THE TWO NAME LISTS to match reality — they are the leak check's data.
+// ---------------------------------------------------------------------------
+
+// HARD: brand/product names that must NEVER appear anywhere — invented product names, or a
+// brand that was explicitly removed (its reappearance is a regression). Checked everywhere.
+const LINT_BRAND_NAMES = ["FreightVet", "B&I Ventures", "B and I Ventures"];
+
+// SOFT: tenant identities that shouldn't surface in customer-facing FRAMING (title /
+// description / AI-native) but ARE legitimate in build-sequence test steps
+// ("test with the bivium tenant"). So these are checked against framing ONLY.
+const LINT_TENANT_NAMES = ["Bivium Freight", "Bivium", "acme"];
+
+// Change-narration tells — a rewritten description should state what the idea IS, not narrate
+// how it changed. (The rewrite prompt already avoids these; this catches any that slip through
+// via any path.)
+const LINT_NARRATION = [
+  /scope narrowed/i, /\bthis is not a\b/i, /we decided against/i,
+  /narrowed (significantly )?from the original/i, /\boriginally,? (this|the idea|it)\b/i,
+  /as (we )?discussed/i, /per (our|the) (conversation|chat)/i,
+];
+
+// Stage names retired by the stage-machine refactor — a leftover means stale text.
+const LINT_DEAD_STAGES = [/\bIn Review\b/];
+
+const lintWordRe = (name: string) =>
+  new RegExp("\\b" + name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\b", "i");
+
+/** Deterministic consistency lint. Returns a short " · "-joined findings string, or "" if clean. */
+export function lintIdea(f: {
+  title?: string; description?: string; aiNative?: string; brief?: string; sequence?: string;
+}): string {
+  const framing = [f.title, f.description, f.aiNative].filter(Boolean).join("\n");
+  const all = [f.title, f.description, f.aiNative, f.brief, f.sequence].filter(Boolean).join("\n");
+  const out: string[] = [];
+
+  for (const n of LINT_BRAND_NAMES) if (lintWordRe(n).test(all)) out.push(`name-leak: brand "${n}" in spec`);
+  for (const n of LINT_TENANT_NAMES) if (lintWordRe(n).test(framing)) out.push(`name-leak: tenant "${n}" in idea framing`);
+  for (const re of LINT_NARRATION) { const m = all.match(re); if (m) out.push(`narration: "${m[0]}" — state what it IS, not the change`); }
+  for (const re of LINT_DEAD_STAGES) { const m = all.match(re); if (m) out.push(`stale-stage: "${m[0]}" (renamed)`); }
+
+  return out.join(" · ");
+}
