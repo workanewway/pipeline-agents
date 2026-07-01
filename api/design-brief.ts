@@ -20,7 +20,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import {
   projectByName, AI_NATIVE_DIRECTIVE, Project, cronAuthorized,
   getSheets, readQueue, updateCells, QueueRow, DEFAULT_MODEL,
-  getRepoManifest, isGithubRepo,
+  getRepoManifest, isGithubRepo, lintIdea,
 } from "../lib/pipeline-common.js";
 export const maxDuration = 300;
 
@@ -217,11 +217,21 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       if (!project) continue;
       const brief = await generate(project, row);
       if (!brief) continue;
+      // Deterministic consistency lint on the produced spec — flags name leakage, stale
+      // narration, dead stage vocab. Non-blocking: it only writes the Lint column.
+      const lint = lintIdea({
+        title: row.get("Title"),
+        description: row.get("Reasoning"),
+        aiNative: row.get("AI-Native Approach"),
+        brief: brief.designBrief,
+        sequence: brief.buildSequence,
+      });
       await updateCells(sheets, row.rowNum, {
         "Design Brief": brief.designBrief,
         "Build Sequence": brief.buildSequence,
         "Open Questions": brief.openQuestions,
         Stage: "Designing",
+        Lint: lint,
         "Updated At": now,
       });
       designed.push(row.get("Idea ID"));
