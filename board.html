@@ -359,7 +359,7 @@
 
   var PHASES = [
     { name: "Intake", tint: "#64748b", stages: ["Captured", "Enriching"] },
-    { name: "Design", tint: "#3182ce", stages: ["Designing", "In Review"] },
+    { name: "Design", tint: "#3182ce", stages: ["Designing"] },
     { name: "Build",  tint: "#ed8936", stages: ["Approved", "Building", "Testing", "Preview Deployed"] },
     { name: "Ship",   tint: "#48bb78", stages: ["Ready to Promote", "Live", "Monitoring"] },
     { name: "Closed", tint: "#94a3b8", stages: ["Declined", "Blocked"] }
@@ -940,8 +940,7 @@
     m.appendChild(fRow);
 
     var previewText = [draft.reasoning,
-      draft.aiNativeApproach ? ("AI-native: " + draft.aiNativeApproach) : "",
-      draft.openQuestions ? ("Open questions: " + draft.openQuestions) : ""].filter(Boolean).join("\n\n");
+      draft.aiNativeApproach ? ("AI-native: " + draft.aiNativeApproach) : ""].filter(Boolean).join("\n\n");
     if (previewText) { var prev = el("div", "preview", previewText); m.appendChild(prev); }
 
     var errLine = el("p", "m-err", ""); m.appendChild(errLine);
