@@ -103,6 +103,19 @@
   button.submit:hover { background: #284f7e; }
   button:disabled { opacity: .55; cursor: default; }
   .stamp { font-family: var(--mono); font-size: 11px; color: var(--ink-faint); white-space: nowrap; }
+  .ctl-group { display: flex; align-items: center; gap: 8px; }
+  .ctl-div { width: 1px; height: 20px; background: var(--line); flex: none; }
+  .icon-btn {
+    width: 32px; height: 32px; flex: none; display: inline-flex; align-items: center; justify-content: center;
+    padding: 0; cursor: pointer; background: #fff; border: 1px solid var(--line); border-radius: 8px;
+    color: var(--ink-soft); transition: background .12s ease, color .12s ease, border-color .12s ease;
+  }
+  .icon-btn:hover { background: #eef3f9; color: var(--action); border-color: rgba(49,130,206,.4); }
+  .icon-btn svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+  .icon-btn.loading { pointer-events: none; opacity: .6; }
+  .icon-btn.loading svg { animation: spin .7s linear infinite; transform-origin: center; }
+  button.submit.dim { opacity: .42; cursor: default; }
+  button.submit .s-count { font-variant-numeric: tabular-nums; opacity: .85; }
 
   /* ── Board ─────────────────────────────────────────────── */
   .scroll { flex: 1; overflow: auto; padding: 0 14px 18px; }
@@ -194,7 +207,6 @@
   .chev:hover { background: var(--line); color: var(--ink-soft); }
   .chev svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; transition: transform .18s ease; }
   .card.expanded .chev svg { transform: rotate(180deg); }
-  .card.expanded .card-reason { -webkit-line-clamp: unset; display: block; overflow: visible; }
   .card-more { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line-soft); display: grid; gap: 7px; }
   .more-row { font-size: 11px; line-height: 1.45; }
   .more-row .k { font-family: var(--mono); font-size: 9px; text-transform: uppercase; letter-spacing: .05em; color: var(--ink-faint); display: block; margin-bottom: 1px; }
@@ -291,18 +303,29 @@
       <span class="sub" id="totalCount">—</span>
     </div>
     <div class="controls">
-      <button class="new-idea-btn" id="newIdea">+ New idea</button>
-      <input type="search" id="search" placeholder="Search title or reasoning…" aria-label="Search ideas" />
-      <select id="fSource" aria-label="Filter by source"><option value="">All sources</option></select>
-      <label class="toggle"><input type="checkbox" id="hideEmpty" checked /> Hide empty</label>
-      <label class="toggle"><input type="checkbox" id="showClosed" checked /> Show closed</label>
+      <!-- view lenses: what you're looking at -->
+      <div class="ctl-group">
+        <input type="search" id="search" placeholder="Search title or reasoning…" aria-label="Search ideas" />
+        <select id="fSource" aria-label="Filter by source"><option value="">All sources</option></select>
+        <label class="toggle"><input type="checkbox" id="hideEmpty" checked /> Hide empty</label>
+        <label class="toggle"><input type="checkbox" id="showClosed" checked /> Show closed</label>
+      </div>
+      <span class="ctl-div"></span>
+      <!-- mode + its status readout -->
       <label class="rtoggle loading" id="researchToggle" title="Auto-research for Broker Platform — when on, the daily agent proposes new ideas for this project. Off by default.">
         <span class="rt-label">Auto-research</span>
         <span class="rt-switch"><input type="checkbox" id="researchEnabled" disabled aria-label="Auto-research for Broker Platform" /><span class="rt-slider"></span></span>
       </label>
-      <span class="stamp" id="stamp"></span>
-      <button class="ghost" id="runDesign">Run design</button>
-      <button class="ghost" id="refresh">Refresh</button>
+      <span class="ctl-div"></span>
+      <!-- actions -->
+      <div class="ctl-group">
+        <button class="new-idea-btn" id="newIdea">+ New idea</button>
+        <span class="stamp" id="stamp"></span>
+        <button class="icon-btn" id="refresh" title="Refresh the queue" aria-label="Refresh the queue">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+        </button>
+      </div>
+      <span class="ctl-div"></span>
       <button class="submit" id="submit" title="Run the watcher now: fire a build for every Approved idea">Submit</button>
     </div>
   </header>
@@ -362,7 +385,6 @@
     toast: document.getElementById("toast"),
     submit: document.getElementById("submit"),
     newIdea: document.getElementById("newIdea"),
-    runDesign: document.getElementById("runDesign"),
     researchToggle: document.getElementById("researchToggle"),
     researchEnabled: document.getElementById("researchEnabled")
   };
@@ -456,39 +478,31 @@
     }
     card.appendChild(foot);
 
-    // Expandable detail — more context inline, without opening the resolve view. Renders
-    // whichever fields the board API provides; any it doesn't return are simply omitted.
+    // Expandable detail — the full design brief and the priority rationale, without opening
+    // the resolve view. Both come from the board API; if it doesn't send them the panel is
+    // empty and the chevron drops out.
     var more = el("div", "card-more"); more.hidden = true;
-    function moreRow(label, value, cls) {
+    function moreRow(label, value) {
       if (!value) return;
-      var row = el("div", cls || "more-row");
+      var row = el("div", "more-row");
       row.appendChild(el("span", "k", label));
       row.appendChild(el("span", "v", String(value)));
       more.appendChild(row);
     }
-    var seq = idea.buildSequence || idea.sequence;
-    moreRow("Product", idea.product);
-    moreRow("Stage", idea.stage);
-    moreRow("AI-native approach", idea.aiNative || idea.aiNativeApproach);
-    moreRow("Open questions", idea.openQuestions);
-    moreRow("Build sequence", seq ? (seq.length > 600 ? seq.slice(0, 600) + " …" : seq) : "");
+    moreRow("Design brief", idea.designBrief);
     moreRow("Priority rationale", idea.priorityRationale);
-    if (idea.lint) moreRow("Lint", idea.lint, "more-lint");
 
     var hasMore = more.childNodes.length > 0;
-    if (hasMore) card.appendChild(more);
-
-    // The chevron un-clamps the reasoning and reveals the panel. If there's genuinely nothing
-    // extra to show (no reasoning, no detail fields), drop the chevron rather than leave a no-op.
-    if (hasMore || idea.reasoning) {
+    if (hasMore) {
+      card.appendChild(more);
       chev.addEventListener("click", function (e) {
         e.stopPropagation();
         var open = card.classList.toggle("expanded");
-        if (hasMore) more.hidden = !open;
+        more.hidden = !open;
         chev.setAttribute("aria-expanded", String(open));
       });
     } else {
-      chev.remove();
+      chev.remove();  // nothing to expand on this card
     }
 
     return card;
@@ -590,37 +604,6 @@
       .catch(function (e) { go.disabled = false; go.textContent = "Try again"; errLine.textContent = e.message; });
   }
 
-  function openRunDesign() {
-    var captured = ALL.filter(inScope).filter(function (i) { return (i.stage || "") === "Captured" && Number(i.priority) >= 60; });
-    captured.sort(function (a, b) { return (Number(b.priority) || 0) - (Number(a.priority) || 0); });
-    var top = captured[0];
-
-    els.overlay.innerHTML = "";
-    var modal = el("div", "modal");
-    var head = el("div", "modal-head");
-    head.appendChild(el("span", "m-id", "DESIGN"));
-    var x = el("button", "m-close", "\u00D7"); x.setAttribute("aria-label", "Close"); x.addEventListener("click", closeModal);
-    head.appendChild(x); modal.appendChild(head);
-    modal.appendChild(el("h3", null, "Run design"));
-    modal.appendChild(el("p", "m-sub", top
-      ? "Designs the highest-priority Captured idea: " + top.id + " — " + (top.title || "")
-      : "No Captured idea over priority 60 is waiting. (To design a specific idea, use Decide → Send to Design on its card.)"));
-    if (top) modal.appendChild(warn("blue", "Generates / refines its spec and moves it to Designing. Spends API credits. One idea per run."));
-    var errLine = el("p", "m-err", ""); modal.appendChild(errLine);
-    var actions = el("div", "m-actions");
-    var cancel = el("button", "btn", "Cancel"); cancel.addEventListener("click", closeModal); actions.appendChild(cancel);
-    if (top) {
-      var go = el("button", "btn primary", "Run design");
-      go.addEventListener("click", function () { runDesign(top.id, go, errLine); });
-      actions.appendChild(go);
-    }
-    modal.appendChild(actions);
-    els.overlay.appendChild(modal);
-    els.overlay.hidden = false;
-    document.addEventListener("keydown", escClose);
-    els.overlay.onclick = function (e) { if (e.target === els.overlay) closeModal(); };
-  }
-
   function warn(kind, html) { var w = el("div", "m-warn " + kind); w.innerHTML = html; return w; }
 
   var toastTimer = null;
@@ -687,7 +670,19 @@
     return true;
   }
 
+  function updateSubmit() {
+    // Submit doubles as a status light: it counts ideas sitting at Approved (what it would
+    // fire) and dims when there's nothing queued, so a glance tells you if work is waiting.
+    var n = ALL.filter(inScope).filter(function (i) { return (i.stage || "") === "Approved"; }).length;
+    els.submit.textContent = "";
+    els.submit.appendChild(document.createTextNode("Submit"));
+    if (n > 0) { var c = el("span", "s-count", " \u00B7 " + n); els.submit.appendChild(c); }
+    els.submit.classList.toggle("dim", n === 0);
+    els.submit.disabled = n === 0;
+  }
+
   function render() {
+    updateSubmit();
     var hideEmpty = els.hideEmpty.checked, showClosed = els.showClosed.checked;
     var scoped = ALL.filter(inScope);
     var byStage = {}, unknown = [], shown = 0;
@@ -770,7 +765,7 @@
   }
 
   function load() {
-    els.refresh.disabled = true; els.refresh.textContent = "Loading…";
+    els.refresh.classList.add("loading");
     fetch(api("/api/board"), { cache: "no-store" })
       .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
       .then(function (res) {
@@ -779,7 +774,7 @@
         els.loading.hidden = true; populateFilters(); setStamp(res.j.updatedAt); render();
       })
       .catch(function (e) { showError(e.message); })
-      .finally(function () { els.refresh.disabled = false; els.refresh.textContent = "Refresh"; });
+      .finally(function () { els.refresh.classList.remove("loading"); });
   }
 
   // ── Submit: run the watcher ──────────────────────────────────────────
@@ -1063,7 +1058,6 @@
   els.refresh.addEventListener("click", load);
   els.submit.addEventListener("click", openSubmit);
   els.newIdea.addEventListener("click", openIntake);
-  els.runDesign.addEventListener("click", openRunDesign);
   els.researchEnabled.addEventListener("change", onResearchToggle);
 
   load();
