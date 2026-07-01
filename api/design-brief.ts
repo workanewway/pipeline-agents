@@ -20,7 +20,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import {
   projectByName, AI_NATIVE_DIRECTIVE, Project, cronAuthorized,
   getSheets, readQueue, updateCells, QueueRow, DEFAULT_MODEL,
-  getRepoManifest, getProjectContext, isGithubRepo, lintIdea,
+  getRepoManifest, getProjectContext, isGithubRepo, lintIdea, parseLockedScope,
 } from "../lib/pipeline-common.js";
 export const maxDuration = 300;
 
@@ -126,13 +126,24 @@ ${submittedSequence || "(none provided — derive one consistent with the submit
   // stub with a visible failure note; non-repo projects keep their static context as canonical.
   const context = await getProjectContext(project, "staging");
 
+  // Locked scope (Phase-2 supervisor, PREVENTION side): if scope-check locked an in/out
+  // boundary, it goes into the prompt as BINDING — drift is cheapest to stop at the source.
+  // Absent lock -> empty block: scope was never explicitly locked, so nothing is imposed.
+  const lockedScope = parseLockedScope(row.get("Locked Scope"));
+  const scopeLockBlock = lockedScope
+    ? `LOCKED SCOPE — settled at scope-check; BINDING on this brief and build sequence:
+${lockedScope.in.length ? `IN scope (the brief must cover these):\n${lockedScope.in.map((b) => `- ${b}`).join("\n")}\n` : ""}${lockedScope.out.length ? `OUT of scope (do NOT include, design for, prepare foundations for, or mention as future steps):\n${lockedScope.out.map((b) => `- ${b}`).join("\n")}\n` : ""}Do not re-open an OUT item as an open question — that boundary is already decided. If the idea
+text appears to conflict with this lock, THE LOCK WINS; note the conflict in the brief instead
+of designing past it.`
+    : "";
+
   const system = `You are a senior product designer + tech lead for this project.
 
 ${context}
 ${manifest ? `\n${manifest}\nUse this to ground the build sequence in files that actually exist. If the idea's premise contradicts what's here (e.g. it targets an element that isn't present, or asks for something already done), say so in the brief rather than inventing steps. Still fold within-file unknowns into the sequence as inspect-and-handle steps — the manifest lists files, not their full contents.\n` : ""}
 ${AI_NATIVE_DIRECTIVE}
 
-${task}
+${scopeLockBlock ? `${scopeLockBlock}\n\n` : ""}${task}
 
 ${isRefine ? `Conventions to enforce while refining: ${brandGuidance} ${deployGuidance}` : ""}
 
@@ -223,13 +234,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const brief = await generate(project, row);
       if (!brief) continue;
       // Deterministic consistency lint on the produced spec — flags name leakage, stale
-      // narration, dead stage vocab. Non-blocking: it only writes the Lint column.
+      // narration, dead stage vocab, and (when a scope lock exists) file-level scope drift.
+      // Non-blocking: it only writes the Lint column.
       const lint = lintIdea({
         title: row.get("Title"),
         description: row.get("Reasoning"),
         aiNative: row.get("AI-Native Approach"),
         brief: brief.designBrief,
         sequence: brief.buildSequence,
+        lockedScope: parseLockedScope(row.get("Locked Scope")),
       });
       await updateCells(sheets, row.rowNum, {
         "Design Brief": brief.designBrief,
