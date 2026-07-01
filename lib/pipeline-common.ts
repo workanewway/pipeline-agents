@@ -520,6 +520,28 @@ export async function getProjectContext(p: Project, branch = "main"): Promise<st
 }
 
 // ---------------------------------------------------------------------------
+// Locked scope — the machine-readable in/out boundary the scope-chat rewrite emits
+// (written to the "Locked Scope" column by idea.ts, with a server-side lockedAt).
+// An absent/empty cell means "scope was never explicitly locked": consumers (the
+// design-brief constraint block, the scope-drift lint) SKIP those rows rather than
+// inventing a baseline.
+// ---------------------------------------------------------------------------
+export interface LockedScope { in: string[]; out: string[]; lockedAt?: string }
+
+/** Parse the "Locked Scope" cell (JSON {in,out,lockedAt}). Null when absent, unparseable, or empty. */
+export function parseLockedScope(cell: string): LockedScope | null {
+  try {
+    const v = JSON.parse(cell || "");
+    if (!v || typeof v !== "object") return null;
+    const list = (x: any): string[] =>
+      Array.isArray(x) ? x.filter((s: any) => typeof s === "string" && s.trim()).map((s: string) => s.trim()) : [];
+    const scope: LockedScope = { in: list(v.in), out: list(v.out) };
+    if (typeof v.lockedAt === "string") scope.lockedAt = v.lockedAt;
+    return scope.in.length || scope.out.length ? scope : null;
+  } catch { return null; }
+}
+
+// ---------------------------------------------------------------------------
 // Deterministic lint — the supervisor's SAFE half. Flags (never blocks, never edits)
 // the mechanical consistency mistakes that recurred in practice: name leakage, stale
 // rewrite-narration, and dead stage vocabulary. RULES ONLY — no LLM judgment, so there's
@@ -554,9 +576,18 @@ const LINT_DEAD_STAGES = [/\bIn Review\b/];
 const lintWordRe = (name: string) =>
   new RegExp("\\b" + name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\b", "i");
 
+// Filenames inside a locked-scope OUT bullet — the one anchor a RULE can check
+// reliably. General keyword matching against prose is deliberately NOT done here:
+// it floods the Lint column with noise and erodes trust in it. Semantic drift is
+// caught upstream (the lock is injected into the design prompt as binding) and at
+// the verdict (the lock renders beside the brief for the human). Phase 2 stays
+// rules-only by checking only what rules can actually check.
+const LINT_FILE_RE = /\b[\w.\/-]*[\w-]+\.(html|ts|tsx|js|jsx|sql|css|ya?ml|php)\b/gi;
+
 /** Deterministic consistency lint. Returns a short " · "-joined findings string, or "" if clean. */
 export function lintIdea(f: {
   title?: string; description?: string; aiNative?: string; brief?: string; sequence?: string;
+  lockedScope?: LockedScope | null;
 }): string {
   const framing = [f.title, f.description, f.aiNative].filter(Boolean).join("\n");
   const all = [f.title, f.description, f.aiNative, f.brief, f.sequence].filter(Boolean).join("\n");
@@ -566,6 +597,28 @@ export function lintIdea(f: {
   for (const n of LINT_TENANT_NAMES) if (lintWordRe(n).test(framing)) out.push(`name-leak: tenant "${n}" in idea framing`);
   for (const re of LINT_NARRATION) { const m = all.match(re); if (m) out.push(`narration: "${m[0]}" — state what it IS, not the change`); }
   for (const re of LINT_DEAD_STAGES) { const m = all.match(re); if (m) out.push(`stale-stage: "${m[0]}" (renamed)`); }
+
+  // scope-drift (narrow, deterministic): an OUT bullet that names a source file is the
+  // highest-signal lock ("no changes to vetting.html"). Flag when that file shows up in
+  // the DESIGN OUTPUT (brief/sequence — not the idea framing, which legitimately states
+  // the boundary). Surfaces with a "?" — a brief saying "leave vetting.html untouched"
+  // trips this too, and that's fine: the flag asks for a human glance, it never gates.
+  const scope = f.lockedScope;
+  if (scope && scope.out.length) {
+    const design = [f.brief, f.sequence].filter(Boolean).join("\n").toLowerCase();
+    if (design) {
+      const flagged = new Set<string>();
+      for (const bullet of scope.out) {
+        for (const file of bullet.match(LINT_FILE_RE) || []) {
+          const fl = file.toLowerCase();
+          if (!flagged.has(fl) && design.includes(fl)) {
+            flagged.add(fl);
+            out.push(`scope-drift?: out-of-scope "${file}" appears in the design output — verify against the locked scope`);
+          }
+        }
+      }
+    }
+  }
 
   return out.join(" · ");
 }
