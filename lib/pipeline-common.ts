@@ -158,7 +158,10 @@ paying client.`,
 
 export const projectByName = (name: string) => PROJECTS.find((p) => p.name === name);
 
-// Column contract (A..AB). Writers rely on order; readers map by header.
+// Column contract (A..AF). Writers rely on order; readers map by header.
+// NOTE: this MUST match the Queue tab's real header row, left to right, exactly — writers
+// address cells by POSITION in this array. Migration Files / Pending Migration / Build Report
+// were added to the sheet by hand and belong here so the positions line up (Lint is AF).
 export const COLUMNS = [
   "Idea ID", "Title", "Stage", "Source", "Product", "Priority Score",
   "Priority Rationale", "Reasoning", "AI-Native Approach", "Evidence / Sources",
@@ -166,6 +169,7 @@ export const COLUMNS = [
   "Review", "Review Feedback", "Revisions", "Review Log", "Decided At",
   "Build Status", "Test Results", "Preview URL", "Prod URL", "PR / Commit",
   "Blocked Reason", "Created At", "Updated At",
+  "Migration Files", "Pending Migration", "Build Report", "Lint",
 ] as const;
 
 export type ColumnName = (typeof COLUMNS)[number];
@@ -210,7 +214,7 @@ export interface QueueRow {
 }
 
 export async function readQueue(sheets: Sheets): Promise<{ headers: string[]; rows: QueueRow[] }> {
-  const res = await sheets.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: `${TAB}!A1:AB` });
+  const res = await sheets.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: `${TAB}!A1:AF` });
   const values = res.data.values ?? [];
   const headers = (values[0] ?? []).map((h: string) => String(h).trim());
   const at = (name: string) => headers.indexOf(name);
@@ -223,10 +227,19 @@ export async function readQueue(sheets: Sheets): Promise<{ headers: string[]; ro
 }
 
 export async function updateCells(sheets: Sheets, rowNum: number, updates: Partial<Record<ColumnName, string>>) {
-  const data = Object.entries(updates).map(([name, value]) => ({
-    range: `${TAB}!${a1(colIndex(name as ColumnName))}${rowNum}`,
-    values: [[value as string]],
-  }));
+  const data = Object.entries(updates)
+    .filter(([name]) => {
+      const ok = colIndex(name as ColumnName) >= 0;
+      // An unknown column name would build an unparseable range (e.g. "Queue!9") and fail the
+      // ENTIRE batch — every other field with it. Skip it loudly instead; the sheet is missing
+      // the header, or it's spelled differently than COLUMNS.
+      if (!ok) console.error(`[updateCells] unknown column "${name}" — not in COLUMNS; skipped. Add the header + the COLUMNS entry.`);
+      return ok;
+    })
+    .map(([name, value]) => ({
+      range: `${TAB}!${a1(colIndex(name as ColumnName))}${rowNum}`,
+      values: [[value as string]],
+    }));
   if (!data.length) return;
   await sheets.spreadsheets.values.batchUpdate({
     spreadsheetId: SHEET_ID,
