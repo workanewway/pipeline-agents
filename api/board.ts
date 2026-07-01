@@ -4,6 +4,7 @@ import { google } from 'googleapis';
 // Read-only. Lists every row in the Pipeline Queue for the Kanban board.
 // Reads the header row and maps by column NAME, so it survives column drift
 // (27 vs 28 cols) and any future reordering. No writes, no Anthropic calls.
+
 export const maxDuration = 30;
 
 const TAB = 'Queue';
@@ -24,6 +25,7 @@ const FIELD_MAP: Record<string, string> = {
   priority_rationale: 'priorityRationale',
   reasoning: 'reasoning',
   open_questions: 'openQuestions',
+  design_brief: 'designBrief',
   build_sequence: 'buildSequence',
   review: 'review',
   review_feedback: 'reviewFeedback',
@@ -62,7 +64,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'],
     });
     const sheets = google.sheets({ version: 'v4', auth });
-
     const resp = await sheets.spreadsheets.values.get({ spreadsheetId: sheetId, range: RANGE });
     const rows = resp.data.values || [];
     if (rows.length === 0) {
@@ -72,7 +73,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // Build column index -> field name from the header row.
     const header = rows[0].map((h) => FIELD_MAP[norm(h)] || null);
-
     const ideas: Record<string, string>[] = [];
     for (let r = 1; r < rows.length; r++) {
       const row = rows[r];
@@ -90,6 +90,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         // Report only whether a Build Sequence exists — don't ship the full text.
         obj.hasBuildSequence = obj.buildSequence ? '1' : '';
         delete obj.buildSequence;
+        // The board's card expand shows the full Design Brief on demand, so it IS shipped
+        // (unlike the build sequence). At this queue size the extra payload is negligible.
         ideas.push(obj);
       }
     }
