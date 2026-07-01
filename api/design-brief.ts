@@ -20,7 +20,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import {
   projectByName, AI_NATIVE_DIRECTIVE, Project, cronAuthorized,
   getSheets, readQueue, updateCells, QueueRow, DEFAULT_MODEL,
-  getRepoManifest, isGithubRepo, lintIdea,
+  getRepoManifest, getProjectContext, isGithubRepo, lintIdea,
 } from "../lib/pipeline-common.js";
 export const maxDuration = 300;
 
@@ -121,9 +121,14 @@ ${submittedSequence || "(none provided — derive one consistent with the submit
   // existence questions itself and catch false premises a stage earlier. Soft-fails.
   const manifest = isGithubRepo(project.repo) ? await getRepoManifest(project.repo, "staging") : "";
 
+  // Canonical project context: fetched live from the build-target repo's CONTEXT.md (same
+  // branch as the manifest — `staging`, design's build base). Falls back to the thin static
+  // stub with a visible failure note; non-repo projects keep their static context as canonical.
+  const context = await getProjectContext(project, "staging");
+
   const system = `You are a senior product designer + tech lead for this project.
 
-${project.context}
+${context}
 ${manifest ? `\n${manifest}\nUse this to ground the build sequence in files that actually exist. If the idea's premise contradicts what's here (e.g. it targets an element that isn't present, or asks for something already done), say so in the brief rather than inventing steps. Still fold within-file unknowns into the sequence as inspect-and-handle steps — the manifest lists files, not their full contents.\n` : ""}
 ${AI_NATIVE_DIRECTIVE}
 
