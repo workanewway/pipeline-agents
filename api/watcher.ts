@@ -77,7 +77,7 @@ async function fireBuild(row: QueueRow): Promise<{ ok: boolean; note: string }> 
   return { ok: false, note: `dispatch failed ${res.status}: ${(await res.text()).slice(0, 200)}` };
 }
 
-// Approved -> fire build -> Building (or design-only handoff, or Blocked on failure).
+// Approved -> CLAIM (Stage=Building) -> fire build (or design-only handoff, or Blocked on failure).
 async function fireApproved(row: QueueRow): Promise<string> {
   const id = row.get("Idea ID");
   const log = row.get("Review Log");
@@ -93,21 +93,41 @@ async function fireApproved(row: QueueRow): Promise<string> {
     return `${id}: approved (design-only handoff)`;
   }
 
+  // CLAIM the row BEFORE dispatching. Two watcher invocations can overlap (the daily
+  // cron + a Submit click, or a double-clicked Submit); each reads the sheet before the
+  // other writes. Firing first meant BOTH could dispatch the same idea — the workflow's
+  // concurrency group serializes them, so the second build runs against a staging that
+  // already contains the first's work, makes no edits, and its writeback overwrites the
+  // first's Testing with Blocked ("no edits"). Claiming first (Stage=Building, then
+  // dispatch) shrinks the race window from read→GitHub-call→write (seconds) to
+  // read→write (sub-second). Not a true lock — Sheets has no compare-and-swap — but it
+  // removes the realistic collision.
+  // Named edge: a crash BETWEEN the claim and the dispatch leaves the row at Building
+  // with status "claimed — firing build…" and no build coming. That's a visible stuck
+  // state on the board (the remedy is setting the row back to Approved), which is the
+  // right trade against a silent Testing→Blocked overwrite.
+  const claimLog = appendLog(log, "Claimed for build (pre-dispatch)");
+  await write(row.rowNum, {
+    Stage: "Building",
+    "Build Status": "claimed — firing build…",
+    "Review Log": claimLog,
+  });
+
   const fired = await fireBuild(row);
   if (fired.ok) {
     await write(row.rowNum, {
-      Stage: "Building",
       "Build Status": "build fired (staging)",
-      "Review Log": appendLog(log, `Build fired — ${fired.note}`),
+      "Review Log": appendLog(claimLog, `Build fired — ${fired.note}`),
     });
     return `${id}: build fired -> Building`;
   }
-  // Fire failed: surface it as Blocked rather than silently retrying forever.
+  // Dispatch failed AFTER the claim: revert loudly to Blocked — never leave a phantom
+  // "Building" row that no build will ever write back to.
   await write(row.rowNum, {
     Stage: "Blocked",
     "Build Status": "build NOT fired",
     "Blocked Reason": fired.note,
-    "Review Log": appendLog(log, `Build fire FAILED — ${fired.note}`),
+    "Review Log": appendLog(claimLog, `Build fire FAILED — ${fired.note}`),
   });
   return `${id}: build NOT fired -> Blocked (${fired.note})`;
 }
