@@ -1,29 +1,15 @@
-/**
- * api/intake.ts  ->  POST /api/intake
- * The Foundry's front door. Takes one pasted idea (thin seed OR fully-baked spec),
- * enriches it to "Captured-grade", and — on your confirmation — writes ONE row at
- * Stage = "Captured". Everything then flows the normal path; design-brief decides depth
- * (and, when a build sequence is present, refines rather than regenerates it).
- *
- * Two-step, so you always see its call before a row is committed:
- *   POST { text }                       -> returns an enriched draft, writes NOTHING
- *   POST { text, confirm:true, draft }  -> writes the (possibly edited) draft to Captured
- *
- * Gated by BOARD_KEY (fail-closed) — it spends API credits and writes the sheet.
- */
-
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import Anthropic from "@anthropic-ai/sdk";
 import {
   PROJECTS, projectByName, AI_NATIVE_DIRECTIVE,
-  getSheets, readQueue, newRow, setCell, SHEET_ID, TAB, DEFAULT_MODEL,
+  getSheets, readQueue, newRow, setCell, updateCells, RowDraft, DEFAULT_MODEL,
 } from "../lib/pipeline-common.js";
 
 export const maxDuration = 120;
 
 const MODEL = DEFAULT_MODEL;
 const MAX_WEB_SEARCHES = 4;
-const PRIORITY_FLOOR = 60; // intake-added ideas must clear design-brief's threshold
+const PRIORITY_FLOOR = 60;
 
 const anthropic = new Anthropic();
 const sheets = getSheets();
@@ -39,8 +25,8 @@ interface Draft {
   priorityRationale: string;
   openQuestions: string;
   sources: string;
-  designBrief: string;   // preserved verbatim if the input was baked; else ""
-  buildSequence: string; // preserved verbatim if the input was baked; else ""
+  designBrief: string;
+  buildSequence: string;
   baked: boolean;
 }
 
@@ -116,7 +102,6 @@ Output ONLY a JSON object, no prose, no fences:
   try {
     parsed = JSON.parse(raw.slice(raw.indexOf("{"), raw.lastIndexOf("}") + 1));
   } catch {
-    // Fall back to a minimal draft from the raw text so the user can still edit + add it.
     parsed = { title: text.slice(0, 80), reasoning: text, baked: false };
   }
   return normalizeDraft(parsed);
@@ -125,7 +110,7 @@ Output ONLY a JSON object, no prose, no fences:
 async function nextRowAndId(): Promise<{ rowNum: number; ideaId: string }> {
   const { rows } = await readQueue(sheets);
   let maxNum = 0;
-  let lastRow = 1; // header is row 1
+  let lastRow = 1;
   for (const r of rows) {
     const m = /IDEA-(\d+)/.exec(r.get("Idea ID"));
     if (m) maxNum = Math.max(maxNum, parseInt(m[1], 10));
@@ -134,7 +119,9 @@ async function nextRowAndId(): Promise<{ rowNum: number; ideaId: string }> {
   return { rowNum: lastRow + 1, ideaId: `IDEA-${String(maxNum + 1).padStart(4, "0")}` };
 }
 
-function buildRow(d: Draft, ideaId: string, now: string): string[] {
+// FIX: returns RowDraft (named-fields) not string[].
+// updateCells resolves each column's position from the live sheet header — drift-proof.
+function buildRow(d: Draft, ideaId: string, now: string): RowDraft {
   const project = projectByName(d.product);
   const row = newRow();
   setCell(row, "Idea ID", ideaId);
@@ -148,21 +135,21 @@ function buildRow(d: Draft, ideaId: string, now: string): string[] {
   setCell(row, "AI-Native Approach", d.aiNativeApproach);
   setCell(row, "Evidence / Sources", d.sources);
   setCell(row, "Open Questions", d.openQuestions);
-  if (d.designBrief) setCell(row, "Design Brief", d.designBrief);
-  if (d.buildSequence) setCell(row, "Build Sequence", d.buildSequence);
+  if (d.designBrief)    setCell(row, "Design Brief",    d.designBrief);
+  if (d.buildSequence)  setCell(row, "Build Sequence",  d.buildSequence);
   setCell(row, "Repo + Target", project?.repo ?? "");
-  setCell(row, "Review", "Pending");
-  setCell(row, "Revisions", "0");
-  setCell(row, "Created At", now);
-  setCell(row, "Updated At", now);
+  setCell(row, "Review",      "Pending");
+  setCell(row, "Revisions",   "0");
+  setCell(row, "Created At",  now);
+  setCell(row, "Updated At",  now);
   return row;
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   const gate = process.env.BOARD_KEY;
-  if (!gate) { res.status(403).json({ ok: false, error: "Intake is locked. Set BOARD_KEY in Vercel to enable it." }); return; }
-  if (req.query.key !== gate) { res.status(401).json({ ok: false, error: "Unauthorized." }); return; }
-  if (req.method !== "POST") { res.status(405).json({ ok: false, error: "Use POST." }); return; }
+  if (!gate)                      { res.status(403).json({ ok: false, error: "Intake is locked. Set BOARD_KEY in Vercel to enable it." }); return; }
+  if (req.query.key !== gate)     { res.status(401).json({ ok: false, error: "Unauthorized." }); return; }
+  if (req.method !== "POST")      { res.status(405).json({ ok: false, error: "Use POST." }); return; }
 
   const body = (req.body && typeof req.body === "object") ? req.body : {};
   const isConfirm = !!(body.confirm && body.draft && typeof body.draft === "object");
@@ -175,14 +162,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const now = new Date().toISOString();
       const { rowNum, ideaId } = await nextRowAndId();
       const row = buildRow(draft, ideaId, now);
-      // Write to an EXPLICIT A{n}:AB{n} range. (append with "A:AB" lets Sheets
-      // table-detection pick the anchor column — it mis-placed rows starting at N.)
-      await sheets.spreadsheets.values.update({
-        spreadsheetId: SHEET_ID,
-        range: `${TAB}!A${rowNum}:AB${rowNum}`,
-        valueInputOption: "USER_ENTERED",
-        requestBody: { values: [row] },
-      });
+      // FIX: was sheets.spreadsheets.values.update with values:[row] where row is a
+      // RowDraft object — Sheets API requires string[][] not Record<string,string>[].
+      // updateCells resolves each column via the live header and writes correct ranges.
+      await updateCells(sheets, rowNum, row);
       res.status(200).json({ ok: true, ideaId, product: draft.product, stage: "Captured", baked: draft.baked });
       return;
     }
