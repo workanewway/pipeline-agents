@@ -1,22 +1,23 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-
 // "Submit": runs the watcher on demand, server-side.
 // Gated by BOARD_KEY (fail-closed) so the board's button is protected even though
 // /api/watcher itself may be open. Forwards CRON_SECRET to the watcher if it's set,
 // so the secret never has to live in the browser.
+//
+// Accepts an optional idea id (?id=IDEA-0042 or {id} in the POST body) and forwards
+// it to the watcher for a TARGETED fire — the board's per-card "Build now" uses this.
+// Without an id, the watcher runs in queue mode (fires the next Approved build by
+// Build Order, one per run).
 //
 // NOTE: we target the STABLE production alias, not process.env.VERCEL_URL.
 // VERCEL_URL is the per-deployment hostname, which sits behind Vercel's deployment
 // protection — a server-side fetch to it returns Vercel's auth/404 HTML page, not the
 // watcher's JSON. The prod alias below is the same URL the PowerShell invoke uses.
 export const maxDuration = 120;
-
 const DEFAULT_WATCHER_URL = 'https://pipeline-agents-opal.vercel.app/api/watcher';
-
 function snippet(s: string): string {
   return (s || '').replace(/\s+/g, ' ').trim().slice(0, 240);
 }
-
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   const gate = process.env.BOARD_KEY;
   if (!gate) {
@@ -28,8 +29,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return;
   }
 
-  const watcherUrl = process.env.WATCHER_URL || DEFAULT_WATCHER_URL;
+  // Optional targeted fire: id from the query string or the POST body. Forwarded to
+  // the watcher as a query param (the watcher accepts either form).
+  const body = typeof req.body === 'string'
+    ? (() => { try { return JSON.parse(req.body); } catch { return {}; } })()
+    : (req.body || {});
+  const id = String((req.query.id as string) || body?.id || '').trim();
 
+  const base = process.env.WATCHER_URL || DEFAULT_WATCHER_URL;
+  const watcherUrl = id
+    ? base + (base.indexOf('?') < 0 ? '?' : '&') + 'id=' + encodeURIComponent(id)
+    : base;
   try {
     const headers: Record<string, string> = {};
     if (process.env.CRON_SECRET) headers['Authorization'] = `Bearer ${process.env.CRON_SECRET}`;
@@ -37,27 +47,26 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // server-side call through. Harmless when the target is already open.
     const bypass = process.env.WATCHER_BYPASS_SECRET || process.env.VERCEL_AUTOMATION_BYPASS_SECRET;
     if (bypass) headers['x-vercel-protection-bypass'] = bypass;
-
     const r = await fetch(watcherUrl, { method: 'GET', headers });
     const text = await r.text();
     const ctype = r.headers.get('content-type') || '';
-
     // Only treat it as JSON if it really is.
-    let body: any = text;
+    let body2: any = text;
     let isJson = false;
     if (ctype.includes('application/json') || /^\s*[{[]/.test(text)) {
-      try { body = JSON.parse(text); isJson = true; } catch { /* keep raw text */ }
+      try { body2 = JSON.parse(text); isJson = true; } catch { /* keep raw text */ }
     }
-
     if (!r.ok) {
+      // Pass the watcher's own error message through when it sent one (e.g. the 400
+      // "Build now is only valid from Approved") so the board shows the real reason,
+      // not just "HTTP 400".
       res.status(502).json({
         ok: false,
-        error: `Watcher returned HTTP ${r.status}.`,
-        detail: isJson ? body : snippet(text),
+        error: (isJson && body2 && body2.error) ? String(body2.error) : `Watcher returned HTTP ${r.status}.`,
+        detail: isJson ? body2 : snippet(text),
       });
       return;
     }
-
     if (!isJson) {
       // Reached a non-JSON page — almost always Vercel auth/404, or a wrong URL.
       res.status(502).json({
@@ -70,8 +79,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
       return;
     }
-
-    res.status(200).json({ ok: true, watcher: body });
+    res.status(200).json({ ok: true, watcher: body2 });
   } catch (err: any) {
     res.status(500).json({ ok: false, error: err?.message || 'Failed to reach the watcher.' });
   }
