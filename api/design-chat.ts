@@ -88,8 +88,10 @@ const READ_FILE_TOOL = {
     "the autonomous build will edit). Use when resolving an open question hinges on what the code " +
     "ACTUALLY does today — e.g. does this handler gate on completion, where does this behavior live, " +
     "which file owns this logic, what shape is this function. Grounds a design decision in reality " +
-    "instead of guessing (the apply.ts-vs-lock.ts trap). Paths are repo-relative, e.g. " +
-    "\"lib/lock.ts\", \"api/vettings/[id]/assess.ts\", or \"workspace.html\".",
+    "instead of guessing (the apply.ts-vs-lock.ts trap). Paths are repo-relative — NOTE: pages " +
+    "live under public/ (e.g. \"public/workspace.html\", \"public/connect.html\") and vetting " +
+    "endpoints under the bracket folder (e.g. \"api/vettings/[id]/assess.ts\", " +
+    "\"api/vettings/[id]/tms.ts\"); library code is e.g. \"lib/tms.ts\".",
   input_schema: {
     type: "object",
     properties: { path: { type: "string", description: "repo-relative file path" } },
