@@ -92,7 +92,7 @@ const READ_FILE_TOOL = {
     "element/page/feature already exists (is this a real change or already done?), or whether the " +
     "idea is one coherent change or several things in the code. Do NOT use it to make design or " +
     "implementation decisions (which selector, how to wire it, whether to persist state) — those " +
-    "belong to design. Paths are repo-relative, e.g. \"workspace.html\" or \"api/assess.ts\".",
+    "belong to design. Paths are repo-relative — NOTE: pages live under public/ (e.g. \"public/workspace.html\") and vetting endpoints under the bracket folder (e.g. \"api/vettings/[id]/assess.ts\").",
   input_schema: {
     type: "object",
     properties: { path: { type: "string", description: "repo-relative file path" } },
