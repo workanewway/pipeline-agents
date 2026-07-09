@@ -10,11 +10,15 @@
  *   mode "chat"    -> normal turn; Claude answers as a design collaborator. Can READ a file
  *                     from the build-target repo (staging) on demand to ground an
  *                     implementation question — see the read_file tool below.
+ *                     ALSO accepts pasted screenshots: the page sends `images` (base64
+ *                     dataURLs) that apply to the FINAL user message of this turn only —
+ *                     history carries a text marker instead, so payloads stay small.
  *   mode "rewrite" -> Claude regenerates the Build Sequence incorporating the
  *                     whole conversation, returns ONLY the new sequence text.
  *                     (Deliberate, reviewable step — the spec never mutates
  *                     silently mid-chat. NO tools in this mode — the output is the
- *                     raw sequence text and a tool call would corrupt it.)
+ *                     raw sequence text and a tool call would corrupt it. No images
+ *                     either: any screenshot was discussed in a prior chat turn.)
  * ---------------------------------------------------------------------------
  */
 import type { VercelRequest, VercelResponse } from "@vercel/node";
@@ -33,6 +37,45 @@ interface Body {
     designBrief: string; buildSequence: string;
   };
   messages: { role: "user" | "assistant"; content: string }[];
+  images?: string[];   // base64 dataURLs pasted with THIS turn (frontend downscales first)
+}
+
+// ── pasted screenshots ───────────────────────────────────────────────────────
+// The page sends images as dataURLs alongside the thread; they belong to the final
+// user message of the current turn. Convert to Anthropic image blocks, validating
+// type and bounding count/size — anything invalid is silently dropped (fail soft:
+// the turn still goes through as text).
+const ALLOWED_IMG = new Set(["image/jpeg", "image/png", "image/webp", "image/gif"]);
+const MAX_IMAGES_PER_TURN = 4;
+const MAX_B64_LEN = 2_000_000; // ~1.5MB decoded per image — frontend downscales well below this
+
+function imageBlocksFrom(images: unknown): any[] {
+  if (!Array.isArray(images)) return [];
+  const blocks: any[] = [];
+  for (const src of images.slice(0, MAX_IMAGES_PER_TURN)) {
+    if (typeof src !== "string") continue;
+    const m = src.match(/^data:(image\/[a-z0-9+.-]+);base64,(.+)$/i);
+    if (!m) continue;
+    const media = m[1].toLowerCase();
+    if (!ALLOWED_IMG.has(media) || m[2].length > MAX_B64_LEN) continue;
+    blocks.push({ type: "image", source: { type: "base64", media_type: media, data: m[2] } });
+  }
+  return blocks;
+}
+
+// Attach this turn's image blocks to the LAST user message in the outgoing array,
+// converting its string content into [image..., text] blocks. If no user turn exists
+// (shouldn't happen from the page), append one so the images still land.
+function attachImagesToLastUser(convo: any[], images: unknown): void {
+  const blocks = imageBlocksFrom(images);
+  if (!blocks.length) return;
+  for (let i = convo.length - 1; i >= 0; i--) {
+    if (convo[i]?.role === "user" && typeof convo[i].content === "string") {
+      convo[i] = { role: "user", content: [...blocks, { type: "text", text: convo[i].content || "(see screenshot)" }] };
+      return;
+    }
+  }
+  convo.push({ role: "user", content: [...blocks, { type: "text", text: "(see screenshot)" }] });
 }
 
 // Design MAY read a file to ground an IMPLEMENTATION question — unlike scope, working out how
@@ -65,6 +108,9 @@ behavior, whether a handler already gates on something, the shape of an existing
 read_file tool to CHECK rather than guess. Read from the staging branch (what the build will edit).
 Name the file you read in your reply so the reasoning is visible. Don't over-read: one or two
 targeted files to settle a specific question, not a tour of the repo.
+
+The user may paste screenshots (e.g. of the staging preview) — read them carefully; what the
+screenshot SHOWS is testing evidence and usually the point of the message.
 
 IDEA: ${idea.title}  (${idea.product})
 WHY: ${idea.reasoning}
@@ -172,10 +218,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     // ── chat mode: design collaborator, WITH the read_file tool against staging.
+    // Pasted screenshots (body.images) attach to the final user message of this turn.
     const project = projectByName(idea.product);
+    const outgoing: any[] = messages.map((m) => ({ role: m.role, content: m.content }));
+    attachImagesToLastUser(outgoing, body.images);
     const { text, reads } = await chatWithFiles(
       systemFor(idea, "chat"),
-      messages.map((m) => ({ role: m.role, content: m.content })),
+      outgoing,
       project?.repo,
       "staging",
     );
