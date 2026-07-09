@@ -35,8 +35,11 @@ const MAX_REVISIONS = 3;
 
 // Delimiters for the Revise Build preamble injected into Build Sequence. The END line
 // doubles as the strip marker so a second revision replaces (not stacks) the first.
-const REV_START = "=== BUILD REVISION";
-const REV_END = "=== END REVISION — original build sequence follows for context ===";
+// IMPORTANT: must NOT start with '=', '+', '-', or '@' — the queue is a Google Sheet,
+// and a cell value starting with those characters is parsed as a formula (a leading
+// '===' renders the whole cell as #ERROR! and poisons the watcher's dispatch payload).
+const REV_START = "### BUILD REVISION";
+const REV_END = "### END REVISION — original build sequence follows for context ###";
 
 const sheets = getSheets();
 const stamp = () => new Date().toISOString();
@@ -122,7 +125,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         }
 
         const preamble = [
-          `${REV_START} (rev ${next}) — ${stamp()} ===`,
+          `${REV_START} (rev ${next}) — ${stamp()} ###`,
           ``,
           `The prior build for this idea is ALREADY COMMITTED on the staging branch.`,
           `The base feature exists and was verified working on the staging preview.`,
