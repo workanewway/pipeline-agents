@@ -143,6 +143,7 @@ export const COLUMNS = [
   "Build Status", "Test Results", "Preview URL", "Prod URL", "PR / Commit",
   "Blocked Reason", "Created At", "Updated At",
   "Migration Files", "Pending Migration", "Build Report", "Lint", "Locked Scope",
+  "Build Order",
 ] as const;
 
 export type ColumnName = (typeof COLUMNS)[number];
@@ -446,6 +447,7 @@ export async function getRepoManifest(repo: string, branch: string): Promise<str
     _manifestCache.set(cacheKey, { text, at: Date.now() });
     return text;
   } catch (err: any) {
+    console.error(`[getRepoManifest] FAILED ${slug}@${branch} — ${String(err?.message || err)}`);
     return `${header}\n(manifest unavailable: ${String(err?.message || err)} — reasoning from context only)`;
   }
 }
@@ -457,6 +459,8 @@ export async function getRepoManifest(repo: string, branch: string): Promise<str
 // doesn't graze the repo). Scope of access = scope of the question, by construction.
 // Guards: source files only, no path traversal, size-capped with a truncation marker, fails
 // soft (returns a note, never throws). Cached briefly like the manifest.
+// FAILURES ARE LOGGED (console.error) — a silent soft-fail made "files aren't reachable"
+// undiagnosable from the Vercel logs (2026-07-09). Bare page names retry under public/.
 // ---------------------------------------------------------------------------
 const _fileCache = new Map<string, { text: string; at: number }>();
 const FILE_TTL_MS = 5 * 60 * 1000;
@@ -475,21 +479,47 @@ export async function getFile(repo: string, branch: string, path: string): Promi
   if (cached && Date.now() - cached.at < FILE_TTL_MS) return cached.text;
 
   const token = process.env.GITHUB_DISPATCH_TOKEN;
-  if (!token) return `(file unavailable: GITHUB_DISPATCH_TOKEN not set)`;
+  if (!token) {
+    console.error(`[getFile] GITHUB_DISPATCH_TOKEN not set — cannot read ${slug}#${branch}:${clean}`);
+    return `(file unavailable: GITHUB_DISPATCH_TOKEN not set)`;
+  }
+
+  const fetchOne = async (p: string): Promise<string> => {
+    const encPath = p.split("/").map(encodeURIComponent).join("/");
+    const f = await ghJson(`https://api.github.com/repos/${slug}/contents/${encPath}?ref=${encodeURIComponent(branch)}`, token);
+    if (Array.isArray(f)) throw new Error(`"${p}" is a directory, not a file`);
+    return f.encoding === "base64" ? Buffer.from(f.content, "base64").toString("utf8") : (f.content || "");
+  };
 
   try {
-    const encPath = clean.split("/").map(encodeURIComponent).join("/");
-    const f = await ghJson(`https://api.github.com/repos/${slug}/contents/${encPath}?ref=${encodeURIComponent(branch)}`, token);
-    if (Array.isArray(f)) return `(refused: "${clean}" is a directory, not a file)`;
-    const content = f.encoding === "base64" ? Buffer.from(f.content, "base64").toString("utf8") : (f.content || "");
+    let servedPath = clean;
+    let content: string;
+    try {
+      content = await fetchOne(clean);
+    } catch (first: any) {
+      // Forgiving retry: pages live under public/ in the build-target repo, and models
+      // (and humans) habitually ask for the bare filename. On a 404 for a page-like path
+      // that doesn't already start with public/, try public/<path> before giving up.
+      const is404 = /GitHub 404/.test(String(first?.message || ""));
+      if (is404 && !clean.startsWith("public/") && /\.(html|css|js)$/.test(clean)) {
+        servedPath = `public/${clean}`;
+        console.error(`[getFile] ${slug}#${branch}:${clean} not found — retrying as ${servedPath}`);
+        content = await fetchOne(servedPath);
+      } else {
+        throw first;
+      }
+    }
     const total = content.length;
     const body = total > FILE_MAX_CHARS
       ? content.slice(0, FILE_MAX_CHARS) + `\n\n…(truncated — first ${FILE_MAX_CHARS} of ${total} chars)`
       : content;
-    const text = `FILE ${clean} @ ${slug}#${branch} (${total} chars)\n\n${body}`;
+    const text = `FILE ${servedPath} @ ${slug}#${branch} (${total} chars)\n\n${body}`;
     _fileCache.set(cacheKey, { text, at: Date.now() });
     return text;
   } catch (err: any) {
+    // LOG the real failure — previously this failed soft with no log line, which made
+    // "files aren't reachable" undiagnosable from the Vercel logs.
+    console.error(`[getFile] FAILED ${slug}#${branch}:${clean} — ${String(err?.message || err)}`);
     return `(file unavailable: ${clean} — ${String(err?.message || err)})`;
   }
 }
@@ -514,8 +544,10 @@ export async function getProjectContext(p: Project, branch = "main"): Promise<st
   // Success: getFile returns "FILE <path> @ <slug>#<branch> …" — keep the provenance header,
   // it tells the model (and anyone reading the prompt) exactly which version it's seeing.
   if (file.startsWith("FILE ")) return file;
-  // Failure: getFile returned a "(…)" note. Fall back to the stub and surface the failure
-  // INSIDE the context so the degradation is legible, not silent.
+  // Failure: getFile returned a "(…)" note. LOG it loudly — a degraded context silently
+  // weakens every scope and design conversation — then fall back to the stub and surface
+  // the failure INSIDE the context so the degradation is legible, not silent.
+  console.error(`[getProjectContext] CONTEXT.md fetch FAILED for ${p.name} (${p.repo}#${branch}): ${file}`);
   return `${p.context}\n\n(canonical ${PROJECT_CONTEXT_FILE} unavailable on ${p.repo}#${branch}: ${file})`;
 }
 
