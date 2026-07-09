@@ -1,25 +1,36 @@
 /**
  * api/watcher.ts  ->  GET/POST /api/watcher
  * ---------------------------------------------------------------------------
- * Fires the build for every approved idea. Runs on a cron (and on demand via the
- * board's "Submit" button — an optional accelerator that fires now instead of
- * waiting for the cron).
+ * Fires builds for approved ideas. Runs on a cron (and on demand via the
+ * board — either "Submit" for the next queued build, or a per-card "Build now"
+ * for one specific idea).
  *
  * SCOPE (deliberately narrow, after the 2026-06-29 stage-contract refactor):
  * The watcher's ONLY job is the one genuinely-asynchronous transition —
  *   Stage "Approved"  -> fire the GitHub build Action -> Stage "Building".
  *
- * Everything else moved to where it belongs:
- *  - Human verdicts (Approve / Decline / Revise / Hold) are now applied
- *    SYNCHRONOUSLY in the browser via /api/decide. The watcher no longer reads
- *    the Review column or routes decisions.
+ * FIRE SEMANTICS (2026-07-09 selective-fire + sequencing):
+ *  - TARGETED: pass ?id=IDEA-0042 (or {id} in the body) to fire exactly that
+ *    idea. It must be at Stage "Approved" — anything else is a 400. Targeted
+ *    fire ignores Build Order (the human pointing at a card IS the ordering).
+ *  - QUEUE MODE (no id — the cron path and the board's Submit): fires ONE
+ *    buildable idea per run, chosen by the optional "Build Order" column in
+ *    the Queue sheet — lowest number first; blanks build after all numbered
+ *    ideas, in sheet (creation) order. One-per-run is deliberate: the build
+ *    workflow's concurrency group holds only a single pending run, so firing
+ *    several dispatches at once can silently drop the middle ones. Remaining
+ *    Approved ideas are reported back as `queued` and fire on later runs.
+ *  - Design-only projects don't consume the build slot: an approved spec is
+ *    the deliverable, so ALL of them are handed off every run regardless.
+ *
+ * Everything else stays where it belongs:
+ *  - Human verdicts (Approve / Decline / Revise / Hold / Revise Build) are
+ *    applied SYNCHRONOUSLY via /api/decide. The watcher no longer reads the
+ *    Review column or routes decisions.
  *  - Building -> Testing is written by the build workflow itself (pipeline-build.yml)
  *    when the preview is ready. The watcher does not touch it.
  *  - Testing -> Ready to Promote is a HUMAN hold: the person verifies the preview
  *    and advances it from the board. The watcher must NOT auto-advance it.
- *
- * Design-only projects don't autonomously build — an approved spec is the deliverable,
- * so they go straight to "Ready to Promote" (a human builds against client infra).
  * ---------------------------------------------------------------------------
  */
 
@@ -39,6 +50,19 @@ function appendLog(existing: string, line: string): string {
 }
 async function write(rowNum: number, updates: Partial<Record<ColumnName, string>>) {
   await updateCells(sheets, rowNum, { ...updates, "Updated At": stamp() });
+}
+
+// Read a column that may not exist in every deployment of the sheet ("Build Order"
+// is optional). Missing column or any read error = "", never a throw.
+function safeGet(row: QueueRow, name: string): string {
+  try { return ((row as any).get(name) || "").toString(); } catch { return ""; }
+}
+
+// Build Order sort key: lowest number first; blank / non-numeric = Infinity
+// (builds after all numbered ideas, in sheet order — Array.sort is stable).
+function orderOf(row: QueueRow): number {
+  const n = parseInt(safeGet(row, "Build Order"), 10);
+  return isNaN(n) ? Infinity : n;
 }
 
 // Fire a repository_dispatch the build workflow listens for. Needs a GitHub token
@@ -77,21 +101,22 @@ async function fireBuild(row: QueueRow): Promise<{ ok: boolean; note: string }> 
   return { ok: false, note: `dispatch failed ${res.status}: ${(await res.text()).slice(0, 200)}` };
 }
 
-// Approved -> CLAIM (Stage=Building) -> fire build (or design-only handoff, or Blocked on failure).
+// Design-only handoff: the approved spec IS the deliverable — no autonomous build.
+async function handOffDesignOnly(row: QueueRow): Promise<string> {
+  const id = row.get("Idea ID");
+  const log = row.get("Review Log");
+  await write(row.rowNum, {
+    Stage: "Ready to Promote",
+    "Build Status": "design-only: handed off (no autonomous build)",
+    "Review Log": appendLog(log, "Approved — design-only project; spec ready for human build against client infra"),
+  });
+  return `${id}: approved (design-only handoff)`;
+}
+
+// Approved -> CLAIM (Stage=Building) -> fire build (or Blocked on failure).
 async function fireApproved(row: QueueRow): Promise<string> {
   const id = row.get("Idea ID");
   const log = row.get("Review Log");
-  const project = projectByName(row.get("Product"));
-
-  // design-only projects: the approved spec IS the deliverable — no autonomous build.
-  if (project && project.deploy === "design-only") {
-    await write(row.rowNum, {
-      Stage: "Ready to Promote",
-      "Build Status": "design-only: handed off (no autonomous build)",
-      "Review Log": appendLog(log, "Approved — design-only project; spec ready for human build against client infra"),
-    });
-    return `${id}: approved (design-only handoff)`;
-  }
 
   // CLAIM the row BEFORE dispatching. Two watcher invocations can overlap (the daily
   // cron + a Submit click, or a double-clicked Submit); each reads the sheet before the
@@ -136,16 +161,57 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (!cronAuthorized(req.headers.authorization)) return res.status(401).json({ error: "unauthorized" });
 
   try {
+    // Optional targeted fire: ?id=IDEA-0042 or {id} in the POST body.
+    const body = typeof req.body === "string" ? (() => { try { return JSON.parse(req.body); } catch { return {}; } })() : (req.body || {});
+    const idParam = String((req.query.id as string) || body?.id || "").trim();
+
     const { rows } = await readQueue(sheets);
     const actions: string[] = [];
 
-    for (const row of rows) {
-      if (row.get("Stage").trim() === "Approved") {
-        actions.push(await fireApproved(row));
+    // ── TARGETED MODE: fire exactly one named idea ─────────────────────────
+    if (idParam) {
+      const row = rows.find((r) => r.get("Idea ID").trim() === idParam);
+      if (!row) return res.status(404).json({ ok: false, error: `idea ${idParam} not found` });
+      const stage = row.get("Stage").trim();
+      if (stage !== "Approved") {
+        return res.status(400).json({ ok: false, error: `Build now is only valid from Approved (idea is at "${stage}")` });
+      }
+      const project = projectByName(row.get("Product"));
+      actions.push(project && (project as any).deploy === "design-only"
+        ? await handOffDesignOnly(row)
+        : await fireApproved(row));
+      return res.status(200).json({ ok: true, acted: actions.length, actions, queued: [] });
+    }
+
+    // ── QUEUE MODE (cron / Submit): all design-only handoffs + ONE build ──
+    const approved = rows.filter((r) => r.get("Stage").trim() === "Approved");
+
+    const buildable: QueueRow[] = [];
+    for (const row of approved) {
+      const project = projectByName(row.get("Product"));
+      if (project && (project as any).deploy === "design-only") {
+        actions.push(await handOffDesignOnly(row));   // never consumes the build slot
+      } else {
+        buildable.push(row);
       }
     }
 
-    return res.status(200).json({ ok: true, acted: actions.length, actions });
+    // Lowest Build Order first; blanks after numbered, in sheet order (stable sort).
+    buildable.sort((a, b) => orderOf(a) - orderOf(b));
+
+    const queued: string[] = [];
+    if (buildable.length > 0) {
+      actions.push(await fireApproved(buildable[0]));
+      for (const row of buildable.slice(1)) {
+        const ord = safeGet(row, "Build Order");
+        queued.push(row.get("Idea ID") + (ord ? ` (order ${ord})` : ""));
+      }
+      if (queued.length) {
+        actions.push(`queued for later runs (one build per run): ${queued.join(", ")}`);
+      }
+    }
+
+    return res.status(200).json({ ok: true, acted: actions.length, actions, queued });
   } catch (err: any) {
     console.error("[watcher] failed:", err);
     return res.status(500).json({ ok: false, error: String(err?.message || err) });
