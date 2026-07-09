@@ -35,6 +35,8 @@ interface Body {
     ideaId: string; title: string; product: string;
     reasoning: string; aiNative: string; openQuestions: string;
     designBrief: string; buildSequence: string;
+    stage?: string;
+    lockedScope?: { in?: string[]; out?: string[]; lockedAt?: string } | null;
   };
   messages: { role: "user" | "assistant"; content: string }[];
   images?: string[];   // base64 dataURLs pasted with THIS turn (frontend downscales first)
@@ -100,6 +102,34 @@ const READ_FILE_TOOL = {
 };
 
 function systemFor(idea: Body["idea"], mode: Body["mode"]): string {
+  // Locked scope, rendered when present — the machine-locked in/out boundary the scope
+  // check recorded before design. The chat treats OUT bullets as binding.
+  const ls = idea.lockedScope;
+  const scopeBlock = ls && ((ls.in && ls.in.length) || (ls.out && ls.out.length))
+    ? `\nLOCKED SCOPE (binding — set at the scope check, machine-diffed later):\n` +
+      (ls.in && ls.in.length ? `IN:\n${ls.in.map((b) => `  - ${b}`).join("\n")}\n` : "") +
+      (ls.out && ls.out.length ? `OUT:\n${ls.out.map((b) => `  - ${b}`).join("\n")}\n` : "")
+    : "";
+
+  // Testing-stage guard: once a build is committed and being verified, the spec's job is
+  // done — chat edits at this stage are for implementation DRIFT only. New capability goes
+  // through intake as its own idea, where it gets a scope check and a design pass.
+  const stage = (idea.stage || "").trim();
+  const inTesting = ["Testing", "Building", "Preview Deployed", "Ready to Promote"].indexOf(stage) >= 0;
+  const testingGuard = inTesting
+    ? `\nTESTING-STAGE GUARD (this idea is at "${stage}" — a build of this spec is already
+committed on staging): classify every change the user raises before agreeing to fold it in.
+- DRIFT FIX: the spec ALREADY requires it and the build diverged (wrong element, missed
+  counter, broken state). Fold these into the spec amendment / Revise Build findings.
+- NEW SCOPE: it adds capability, surface, data, or behavior the spec and locked scope never
+  included — even if small, useful, and discovered during testing. PUSH BACK on these
+  plainly: name it as new scope, do NOT fold it into the spec rewrite, and tell the user to
+  route it through intake ("+ New idea" on the board) as its own idea so it gets a scope
+  check and design pass. Offer to draft the intake text for them. Discovering something in
+  testing does not make it part of this idea.
+If a request mixes both, split it explicitly: fold the drift part, route the new-scope part.`
+    : "";
+
   const base = `You are a senior product designer + tech lead helping Wayne resolve the open
 questions on ONE idea before it goes to an autonomous build. Be direct, surface real tradeoffs,
 push back when a choice has a downside, and don't hedge into mush. You are a collaborator, not a
@@ -117,7 +147,7 @@ screenshot SHOWS is testing evidence and usually the point of the message.
 IDEA: ${idea.title}  (${idea.product})
 WHY: ${idea.reasoning}
 AI-NATIVE CORE: ${idea.aiNative}
-
+${scopeBlock}${testingGuard}
 DESIGN BRIEF:
 ${idea.designBrief}
 
@@ -133,8 +163,10 @@ ${idea.openQuestions}`;
 The conversation has resolved the open questions. Rewrite the BUILD SEQUENCE so it incorporates
 every decision reached in the conversation — concrete, ordered, executable steps for an autonomous
 Claude Code build. Keep the AI-native core first, then scaffolding. Where a decision closed an open
-question, bake the answer into the relevant step (don't leave it open). Output ONLY the new build
-sequence text — no preamble, no markdown fences, no commentary.`;
+question, bake the answer into the relevant step (don't leave it open). EXCLUDE anything the
+conversation identified as new scope / out of scope — those route to intake as separate ideas and
+must not appear in this sequence. Output ONLY the new build sequence text — no preamble, no
+markdown fences, no commentary.`;
   }
   return `${base}
 
