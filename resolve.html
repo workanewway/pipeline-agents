@@ -95,6 +95,17 @@
   .hint{font-size:11.5px;color:var(--ink-faint);flex:1}
   .err{color:#fca5a5;font-size:12px;padding:0 18px 10px}
 
+  /* pasted-screenshot strip (above the composer) */
+  .attach-strip{display:none;gap:8px;padding:8px 12px 0;background:var(--panel);flex-wrap:wrap}
+  .attach-strip.has{display:flex}
+  .attach-thumb{position:relative;width:64px;height:64px;border:1px solid var(--line);
+    border-radius:8px;overflow:hidden;background:var(--panel-2)}
+  .attach-thumb img{width:100%;height:100%;object-fit:cover;display:block}
+  .attach-thumb button{position:absolute;top:2px;right:2px;width:18px;height:18px;line-height:16px;
+    padding:0;border-radius:50%;background:rgba(0,0,0,.65);color:#fff;font-size:12px;border:none;cursor:pointer}
+  .msg .msg-img{display:block;max-width:220px;max-height:160px;border-radius:8px;margin-top:8px;
+    border:1px solid var(--line)}
+
   /* read-only (pre-design) view — single column, reuses the tokens above */
   .ro-meta{display:flex;gap:32px;margin-bottom:22px}
   .ro-meta label{display:block;font-size:11px;letter-spacing:.1em;text-transform:uppercase;
@@ -143,9 +154,11 @@
             </div>
           </div>
           <div id="advanceVerdict" style="display:none">
-            <p class="vnote">Build preview is ready. Verify it against the staging preview, then release the hold.</p>
+            <p class="vnote">Build preview is ready. Verify it against the staging preview, then release the hold — or send testing findings back for a rebuild.</p>
+            <textarea id="vBuildFeedback" rows="2" placeholder="Testing findings (required for Revise build) — be precise and additive; the rebuild applies ONLY these adjustments to the work already on staging"></textarea>
             <div class="verdict-row">
               <button class="primary" id="vAdvance">Advance to Ready to Promote →</button>
+              <button class="ghost" id="vReviseBuild">Revise build ↺</button>
             </div>
           </div>
           <div id="readonlyVerdict" style="display:none">
@@ -161,8 +174,9 @@
       <div class="col-head"><span>Work it through</span><span id="chatNote"></span></div>
       <div class="thread" id="thread"></div>
       <div class="err" id="err" style="display:none"></div>
+      <div class="attach-strip" id="attachStrip"></div>
       <div class="composer">
-        <textarea id="input" rows="1" placeholder="Answer, push back, decide… or type “rewrite the spec”"></textarea>
+        <textarea id="input" rows="1" placeholder="Answer, push back, decide… or type “rewrite the spec” — paste a screenshot (Ctrl+V) to show, not tell"></textarea>
         <button class="send" id="send">Send</button>
       </div>
       <div class="actions">
@@ -185,13 +199,80 @@ let pendingSeq = null;      // proposed rewrite, awaiting save
 const $ = id => document.getElementById(id);
 const esc = s => (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;');
 
-function addMsg(role, text, cls){
+function addMsg(role, text, cls, images){
   const d = document.createElement('div');
   d.className = 'msg ' + (cls || (role==='user'?'you':'them'));
   d.textContent = text;
+  if(Array.isArray(images)){
+    images.forEach(src => {
+      const im = document.createElement('img');
+      im.className = 'msg-img'; im.src = src; im.alt = 'pasted screenshot';
+      d.appendChild(im);
+    });
+  }
   $('thread').appendChild(d);
   $('thread').scrollTop = $('thread').scrollHeight;
   return d;
+}
+
+// ---- pasted screenshots (shared by both chats) ----------------------------
+// A paste of an image lands in a pending strip above the composer; Send ships
+// the pending images WITH that turn only (the backend attaches them to the
+// final user message), and history keeps a text marker so later turns stay
+// small. Images are downscaled client-side (max 1400px, JPEG) so the payload
+// stays well under Vercel's body limit.
+const MAX_IMG_DIM = 1400, MAX_IMGS_PER_TURN = 4;
+
+function downscaleImage(file){
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onerror = () => reject(new Error('could not read pasted image'));
+    fr.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error('could not decode pasted image'));
+      img.onload = () => {
+        const scale = Math.min(1, MAX_IMG_DIM / Math.max(img.width, img.height));
+        const w = Math.max(1, Math.round(img.width * scale));
+        const h = Math.max(1, Math.round(img.height * scale));
+        const c = document.createElement('canvas');
+        c.width = w; c.height = h;
+        c.getContext('2d').drawImage(img, 0, 0, w, h);
+        resolve(c.toDataURL('image/jpeg', 0.85));
+      };
+      img.src = fr.result;
+    };
+    fr.readAsDataURL(file);
+  });
+}
+
+// Wires paste-to-attach onto a textarea. `pending` is the caller's array of
+// dataURLs; `strip` is the thumbnail container; `onErr` reports problems.
+function wireImagePaste(textareaEl, stripEl, pending, onErr){
+  const render = () => {
+    stripEl.innerHTML = '';
+    stripEl.classList.toggle('has', pending.length > 0);
+    pending.forEach((src, i) => {
+      const t = document.createElement('div'); t.className = 'attach-thumb';
+      const im = document.createElement('img'); im.src = src; im.alt = 'screenshot ' + (i+1);
+      const x = document.createElement('button'); x.type = 'button'; x.textContent = '\u00d7';
+      x.title = 'Remove'; x.onclick = () => { pending.splice(i,1); render(); };
+      t.appendChild(im); t.appendChild(x); stripEl.appendChild(t);
+    });
+  };
+  textareaEl.addEventListener('paste', async (e) => {
+    const items = (e.clipboardData && e.clipboardData.items) || [];
+    const files = [];
+    for (const it of items){ if (it.kind === 'file' && /^image\//.test(it.type)) files.push(it.getAsFile()); }
+    if (!files.length) return;            // plain text paste — leave it alone
+    e.preventDefault();
+    for (const f of files){
+      if (pending.length >= MAX_IMGS_PER_TURN){ onErr('Max ' + MAX_IMGS_PER_TURN + ' screenshots per message.'); break; }
+      try{ pending.push(await downscaleImage(f)); }
+      catch(err){ onErr(err.message); }
+    }
+    render();
+  });
+  return render;
 }
 
 async function load(){
@@ -272,8 +353,9 @@ function renderReadOnly(idea){
       <div class="col-head"><span>Scope check</span><span class="chip" id="iChatNote"></span></div>
       <div class="thread" id="iThread"></div>
       <div class="err" id="iErr" style="display:none"></div>
+      <div class="attach-strip" id="iAttachStrip"></div>
       <div class="composer">
-        <textarea id="iInput" rows="1" placeholder="Push back on the scope, decide what's in and out… then rewrite"></textarea>
+        <textarea id="iInput" rows="1" placeholder="Push back on the scope, decide what's in and out… paste a screenshot (Ctrl+V) to show it"></textarea>
         <button class="send" id="iSend">Send</button>
       </div>
       <div class="actions">
@@ -374,10 +456,19 @@ function renderReadOnly(idea){
   const iNote    = document.getElementById('iChatNote');
   let chat = [];   // [{role:'user'|'assistant', content}] — excludes the seeded greeting
 
-  const iAdd = (cls, text) => {
+  const iAdd = (cls, text, images) => {
     const d = document.createElement('div'); d.className = 'msg ' + cls; d.textContent = text;
+    if(Array.isArray(images)){
+      images.forEach(src => {
+        const im = document.createElement('img');
+        im.className = 'msg-img'; im.src = src; im.alt = 'pasted screenshot';
+        d.appendChild(im);
+      });
+    }
     iThread.appendChild(d); iThread.scrollTop = iThread.scrollHeight; return d;
   };
+  const iPending = [];
+  const iRenderAttach = wireImagePaste(iInput, document.getElementById('iAttachStrip'), iPending, m => iShowErr(m));
   // Surface which files the scope chat read to answer — the read was on-demand (a turn asked
   // for it), so it should be visible, not hidden. Renders a small line under the reply.
   const iReads = (reads) => {
@@ -413,16 +504,22 @@ function renderReadOnly(idea){
 
   async function iChat(){
     const text = iInput.value.trim();
-    if(!text) return;
+    if(!text && iPending.length === 0) return;
     // shortcut: typing "rewrite the idea" triggers the rewrite instead of a chat turn
     if(/^rewrite( the)?( idea| it)?[.!]?$/i.test(text)){ iInput.value=''; iInput.style.height='auto'; iAdd('you', text); await iDoRewrite(); return; }
-    iClearErr(); iInput.value=''; iInput.style.height='auto';
-    iAdd('you', text); chat.push({ role:'user', content:text });
+    iClearErr();
+    const images = iPending.slice();
+    iPending.length = 0; iRenderAttach();
+    iInput.value=''; iInput.style.height='auto';
+    const shown = text || '(screenshot)';
+    iAdd('you', shown, images);
+    // History keeps a text marker; the pixels ride this request only.
+    chat.push({ role:'user', content: shown + (images.length ? '\n[' + images.length + ' screenshot(s) attached]' : '') });
     iSend.disabled = true;
     const t = iAdd('them typing', 'thinking…');
     try{
       const r = await fetch('/api/idea-chat',{method:'POST',headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ mode:'chat', idea: curIdea(), messages: chat })});
+        body: JSON.stringify({ mode:'chat', idea: curIdea(), messages: chat, images })});
       const j = await r.json(); t.remove();
       if(!j.ok) throw new Error(j.error||'chat failed');
       iAdd('them', j.text); iReads(j.reads); chat.push({ role:'assistant', content:j.text });
@@ -467,9 +564,13 @@ function renderReadOnly(idea){
 function showErr(m){ const e=$('err'); e.style.display='block'; e.textContent=m; }
 function clearErr(){ $('err').style.display='none'; }
 
+// pending screenshots for the design chat, wired after the DOM exists (bottom of file)
+let pendingImages = [];
+let renderAttach = null;
+
 async function send(){
   const text = $('input').value.trim();
-  if(!text || !idea) return;
+  if((!text && pendingImages.length === 0) || !idea) return;
 
   // If the message is an explicit rewrite command, route to the rewrite path
   // (same deliberate action as the button) rather than a normal chat turn.
@@ -483,14 +584,20 @@ async function send(){
   }
 
   clearErr();
+  const images = pendingImages.slice();
+  pendingImages.length = 0;
+  if(renderAttach) renderAttach();
   $('input').value=''; $('input').style.height='auto';
-  addMsg('user', text);
-  messages.push({role:'user', content:text});
+  const shown = text || '(screenshot)';
+  addMsg('user', shown, null, images);
+  // History keeps a text marker for the image (small payloads on later turns);
+  // the actual pixels ride THIS request only, attached to the final user message.
+  messages.push({role:'user', content: shown + (images.length ? '\n[' + images.length + ' screenshot(s) attached]' : '')});
   $('send').disabled = true;
   const typing = addMsg('assistant','thinking…','typing');
   try{
     const r = await fetch('/api/design-chat',{method:'POST',headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({mode:'chat', idea, messages})});
+      body: JSON.stringify({mode:'chat', idea, messages, images})});
     const j = await r.json();
     typing.remove();
     if(!j.ok) throw new Error(j.error||'chat failed');
@@ -557,8 +664,12 @@ $('save').onclick = save;
 // moves the card to "Approved" (the watcher fires the build); the others route per the
 // stage contract. Then we return to the board.
 async function decide(verdict){
-  const feedback = ($('vFeedback').value||'').trim();
+  // Revise Build reads its own findings box (the Testing card); everything else
+  // reads the design-verdict note box.
+  const fbEl = (verdict === 'Revise Build') ? $('vBuildFeedback') : $('vFeedback');
+  const feedback = ((fbEl && fbEl.value) || '').trim();
   if(verdict==='Revise Research' && !feedback){ $('vMsg').textContent = 'Add a note so the redo has direction.'; $('vFeedback').focus(); return; }
+  if(verdict==='Revise Build' && !feedback){ $('vMsg').textContent = 'Describe the testing findings so the rebuild has direction.'; fbEl.focus(); return; }
   if(verdict==='Decline' && !confirm('Decline this idea? It moves to Declined (terminal).')) return;
   const btns = document.querySelectorAll('#verdictBlock button'); btns.forEach(b=>b.disabled=true);
   $('vMsg').textContent = 'Saving your call…';
@@ -567,7 +678,9 @@ async function decide(verdict){
       body: JSON.stringify({ id: idea.ideaId, verdict, feedback })});
     const j = await r.json();
     if(!j.ok) throw new Error(j.error||'decide failed');
-    $('vMsg').textContent = 'Done — now at “' + j.stage + '”. Back to the board…';
+    $('vMsg').textContent = (verdict === 'Revise Build' && j.stage === 'Approved')
+      ? 'Done — queued for rebuild with your findings (watcher fires on next run, or hit Submit on the board). Back to the board…'
+      : 'Done — now at “' + j.stage + '”. Back to the board…';
     setTimeout(()=>{ location.href = homeHref; }, 950);
   }catch(e){ $('vMsg').textContent = e.message; btns.forEach(b=>b.disabled=false); }
 }
@@ -576,12 +689,13 @@ $('vRevise').onclick  = ()=>decide('Revise Research');
 $('vDecline').onclick = ()=>decide('Decline');
 $('vHold').onclick    = ()=>decide('Hold');
 $('vAdvance').onclick = ()=>decide('Advance');
+$('vReviseBuild').onclick = ()=>decide('Revise Build');
 
 // The design workspace renders for any post-scope card (it has a brief), but the ACTION
 // it offers must match the stage — otherwise opening a Testing card and hitting "Approve"
 // regresses it to Approved. Designing -> design verdicts; Testing/Building -> advance the
-// hold; everything else -> read-only status note (those moves are the watcher's or a board
-// promote, not a resolve action).
+// hold OR send findings back for a rebuild; everything else -> read-only status note
+// (those moves are the watcher's or a board promote, not a resolve action).
 function setVerdictMode(stage){
   const s = (stage||'').trim();
   const show = (id,on)=>{ const e=$(id); if(e) e.style.display = on ? '' : 'none'; };
@@ -614,6 +728,7 @@ $('back').addEventListener('click', e=>{
 });
 $('input').addEventListener('keydown', e=>{ if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); send(); }});
 $('input').addEventListener('input', e=>{ e.target.style.height='auto'; e.target.style.height=Math.min(e.target.scrollHeight,140)+'px'; });
+renderAttach = wireImagePaste($('input'), $('attachStrip'), pendingImages, showErr);
 load();
 </script>
 </body>
