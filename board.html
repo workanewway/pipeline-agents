@@ -195,6 +195,8 @@
   .promote:hover { background: #38a169; }
   .advance { margin-left: auto; font-family: var(--sans); font-size: 11px; font-weight: 650; color: #fff; background: var(--action); border: 0; border-radius: 7px; padding: 5px 11px; cursor: pointer; }
   .advance:hover { background: #2c74bb; }
+  .buildnow { margin-left: auto; font-family: var(--sans); font-size: 11px; font-weight: 700; color: #fff; background: var(--orange); border: 0; border-radius: 7px; padding: 5px 11px; cursor: pointer; }
+  .buildnow:hover { background: #dd7a26; }
   .blocked-note { margin-top: 7px; font-size: 10.5px; color: #b23030; background: rgba(229,62,62,.07); border-radius: 6px; padding: 5px 7px; line-height: 1.35; }
 
   /* ── Card expand (chevron) ─────────────────────────────── */
@@ -327,7 +329,7 @@
         </button>
       </div>
       <span class="ctl-div"></span>
-      <button class="submit" id="submit" title="Run the watcher now: fire a build for every Approved idea">Submit</button>
+      <button class="submit" id="submit" title="Run the watcher now: fires the NEXT Approved build (one per run, by Build Order)">Submit</button>
     </div>
   </header>
 
@@ -369,7 +371,8 @@
   // NOTE: design verdicts (Approve / Decline / Revise / Hold) no longer live on the board.
   // They moved to resolve.html (you read the spec before deciding) and post to /api/decide,
   // which sets Stage synchronously. The board carries only the quick, spec-free actions:
-  // Send to Design, Advance a verified preview, and Promote. /api/review is now unused.
+  // Send to Design, Build now (one Approved idea), Advance a verified preview, and Promote.
+  // /api/review is now unused.
 
   var els = {
     board: document.getElementById("board"),
@@ -411,6 +414,17 @@
   }
   function el(tag, cls, text) { var n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; }
 
+  // Sort Approved ideas the way the watcher fires them: lowest Build Order first,
+  // blanks after all numbered ideas (board API may not supply buildOrder — treat
+  // missing as blank).
+  function buildOrderOf(idea) {
+    var n = parseInt(idea.buildOrder, 10);
+    return isNaN(n) ? Infinity : n;
+  }
+  function fireOrder(list) {
+    return list.slice().sort(function (a, b) { return buildOrderOf(a) - buildOrderOf(b); });
+  }
+
   function buildCard(idea) {
     var card = el("div", "card");
     card.tabIndex = 0;
@@ -447,6 +461,7 @@
     var rp = reviewPill(idea.review);
     if (rp) badges.appendChild(el("span", "pill " + rp.cls, rp.txt));
     if (idea.source) badges.appendChild(el("span", "badge source", idea.source));
+    if (idea.buildOrder) badges.appendChild(el("span", "badge source", "order " + idea.buildOrder));
     if (badges.childNodes.length) card.appendChild(badges);
 
     if (idea.blockedReason) card.appendChild(el("div", "blocked-note", "Blocked: " + idea.blockedReason));
@@ -461,13 +476,17 @@
     foot.appendChild(links);
 
     // Stage-specific quick action. Design verdicts live in resolve (click the card to open
-    // it). The board carries only spec-free moves: send to design, advance a verified
-    // preview to the promotion queue, and promote to prod.
+    // it). The board carries only spec-free moves: send to design, build one approved idea
+    // now, advance a verified preview to the promotion queue, and promote to prod.
     var st = idea.stage || "";
     if (["Captured", "Enriching", "Designing"].indexOf(st) >= 0) {
       var db = el("button", "decide no-nav", "Design \u2192");
       db.addEventListener("click", function (e) { e.stopPropagation(); openDesignConfirm(idea); });
       foot.appendChild(db);
+    } else if (st === "Approved") {
+      var bb = el("button", "buildnow no-nav", "Build now \u2192");
+      bb.addEventListener("click", function (e) { e.stopPropagation(); openBuildNowConfirm(idea); });
+      foot.appendChild(bb);
     } else if (["Testing", "Building", "Preview Deployed"].indexOf(st) >= 0) {
       var ab = el("button", "advance no-nav", "Ready to promote \u2192");
       ab.addEventListener("click", function (e) { e.stopPropagation(); openAdvanceConfirm(idea); });
@@ -568,8 +587,8 @@
   }
 
   // Testing hold-release: the human verified the staging preview and advances the card to
-  // the promotion queue. This is the only Build-phase action on the board; it does NOT
-  // deploy (Promote is the separate prod step). Posts /api/decide verdict "Advance".
+  // the promotion queue. It does NOT deploy (Promote is the separate prod step).
+  // Posts /api/decide verdict "Advance".
   function openAdvanceConfirm(idea) {
     var m = shell(idea);
     m.appendChild(el("h3", null, "Advance " + idea.id + " to Ready to Promote?"));
@@ -604,6 +623,38 @@
         showToast(idea.id + " \u2192 Ready to Promote");
       })
       .catch(function (e) { go.disabled = false; go.textContent = "Try again"; errLine.textContent = e.message; });
+  }
+
+  // Per-card targeted fire: builds THIS approved idea now, leaving the rest of the
+  // Approved queue untouched. Posts /api/submit with the idea id (submit forwards
+  // it to the watcher, which fires only that idea).
+  function openBuildNowConfirm(idea) {
+    var m = shell(idea);
+    m.appendChild(el("h3", null, "Build " + idea.id + " now?"));
+    m.appendChild(el("p", "m-sub", idea.title || ""));
+    m.appendChild(warn("blue", "Fires the autonomous build for <strong>this idea only</strong> on the staging branch (spends API credits, commits code). Other Approved ideas stay queued and are not fired."));
+    var errLine = el("p", "m-err", ""); m.appendChild(errLine);
+    var actions = el("div", "m-actions");
+    var cancel = el("button", "btn", "Cancel"); cancel.addEventListener("click", closeModal); actions.appendChild(cancel);
+    var go = el("button", "btn primary go", "Build now");
+    go.addEventListener("click", function () { runBuildNow(idea, go, cancel, errLine, m); });
+    actions.appendChild(go);
+    m.appendChild(actions);
+  }
+
+  function runBuildNow(idea, go, cancel, errLine, modal) {
+    go.disabled = true; cancel.disabled = true; go.textContent = "Firing\u2026"; errLine.textContent = "";
+    fetch(api("/api/submit?id=" + encodeURIComponent(idea.id)), {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: idea.id })
+    })
+      .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+      .then(function (res) {
+        if (!res.ok || !res.j || res.j.ok === false) throw new Error((res.j && res.j.error) || "Build fire failed");
+        showResult(modal, res.j.watcher);
+        load();
+      })
+      .catch(function (e) { go.disabled = false; cancel.disabled = false; go.textContent = "Try again"; errLine.textContent = e.message; });
   }
 
   function warn(kind, html) { var w = el("div", "m-warn " + kind); w.innerHTML = html; return w; }
@@ -673,8 +724,8 @@
   }
 
   function updateSubmit() {
-    // Submit doubles as a status light: it counts ideas sitting at Approved (what it would
-    // fire) and dims when there's nothing queued, so a glance tells you if work is waiting.
+    // Submit doubles as a status light: it counts ideas sitting at Approved and dims
+    // when there's nothing queued. It fires ONE build per run (the next in Build Order).
     var n = ALL.filter(inScope).filter(function (i) { return (i.stage || "") === "Approved"; }).length;
     els.submit.textContent = "";
     els.submit.appendChild(document.createTextNode("Submit"));
@@ -733,8 +784,14 @@
       col.appendChild(head);
       var body = el("div", "col-body");
       if (vs.cards.length === 0) body.appendChild(el("div", "col-empty-note", "Nothing here"));
-      else vs.cards.sort(function (a, b) { return (parseInt(b.priority, 10) || 0) - (parseInt(a.priority, 10) || 0); })
-                   .forEach(function (idea) { body.appendChild(buildCard(idea)); });
+      else {
+        // Approved sorts in FIRE order (Build Order asc, blanks last) so the column
+        // reads top-to-bottom as "what builds next"; everything else stays priority-sorted.
+        var sorted = (vs.stage === "Approved")
+          ? fireOrder(vs.cards)
+          : vs.cards.sort(function (a, b) { return (parseInt(b.priority, 10) || 0) - (parseInt(a.priority, 10) || 0); });
+        sorted.forEach(function (idea) { body.appendChild(buildCard(idea)); });
+      }
       col.appendChild(body); els.board.appendChild(col);
     });
 
@@ -779,10 +836,10 @@
       .finally(function () { els.refresh.classList.remove("loading"); });
   }
 
-  // ── Submit: run the watcher ──────────────────────────────────────────
+  // ── Submit: run the watcher (fires the NEXT approved build) ──────────
   function openSubmit() {
     var scoped = ALL.filter(inScope);
-    var approved = scoped.filter(function (i) { return (i.stage || "") === "Approved"; });
+    var approved = fireOrder(scoped.filter(function (i) { return (i.stage || "") === "Approved"; }));
 
     els.overlay.innerHTML = "";
     var modal = el("div", "modal");
@@ -791,15 +848,19 @@
     var x = el("button", "m-close", "\u00D7"); x.setAttribute("aria-label", "Close"); x.addEventListener("click", closeModal);
     head.appendChild(x); modal.appendChild(head);
 
-    modal.appendChild(el("h3", null, "Fire approved builds"));
-    modal.appendChild(el("p", "m-sub", "Runs the watcher now instead of waiting for its cron. The watcher fires a build for every idea at the Approved stage \u2014 that's its only job."));
+    modal.appendChild(el("h3", null, "Fire the next approved build"));
+    modal.appendChild(el("p", "m-sub", "Runs the watcher now instead of waiting for its cron. The watcher fires ONE build per run \u2014 the next Approved idea by Build Order (blank = last, then sheet order). The rest stay queued for later runs. To build a specific idea instead, use \u201CBuild now\u201D on its card."));
 
     if (approved.length) {
-      modal.appendChild(warn("blue", "<strong>" + approved.length + " Approved</strong> \u2192 each fires a real autonomous build on the staging branch (spends API credits, commits code). Promotion to production stays separate and manual."));
+      var nxt = approved[0];
+      modal.appendChild(warn("blue", "Next up: <strong>" + nxt.id + "</strong>" +
+        (nxt.buildOrder ? " (order " + String(nxt.buildOrder).replace(/</g, "&lt;") + ")" : "") +
+        " \u2192 fires a real autonomous build on the staging branch (spends API credits, commits code). Promotion to production stays separate and manual."));
+      var lines = approved.map(function (i) { return i.id + (i.buildOrder ? " (order " + i.buildOrder + ")" : ""); });
+      modal.appendChild(el("p", "m-sub", "Approved queue, in fire order: " + lines.join(", ") + "."));
+    } else {
+      modal.appendChild(el("p", "m-sub", "Nothing at Approved right now \u2014 running the watcher will do nothing. (Approve an idea in its resolve view first.)"));
     }
-    modal.appendChild(el("p", "m-sub", approved.length
-      ? "Waiting at Approved: " + approved.map(function (i) { return i.id; }).join(", ") + "."
-      : "Nothing at Approved right now \u2014 running the watcher will do nothing. (Approve an idea in its resolve view first.)"));
 
     var errLine = el("p", "m-err", "");
     modal.appendChild(errLine);
