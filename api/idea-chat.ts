@@ -8,14 +8,17 @@
 // Same browser-open posture as design-chat (no cron secret).
 //
 // Two modes:
-//   { mode:'chat',    idea, messages } -> { ok, text }
+//   { mode:'chat',    idea, messages, images? } -> { ok, text }
 //       Pressure-test scope: one idea or several? too big / too thin? in-vs-out boundary?
 //       overlap with something already built? Stays out of "how to build it".
+//       `images` (base64 dataURLs pasted with THIS turn) attach to the final user
+//       message — history carries a text marker instead, so payloads stay small.
 //   { mode:'rewrite', idea, messages } -> { ok, idea:{ reasoning, aiNative, lockedScope } }
 //       Sharpen the Description + in/out boundary from the scope decisions, AND emit the
 //       machine-readable locked scope ({in:[], out:[]}) that the supervisor's Phase-2
 //       drift check diffs design output against. Does NOT form or touch open questions —
-//       those are created at the design step.
+//       those are created at the design step. (No images: any screenshot was discussed
+//       in a prior chat turn.)
 //
 // Grounded: pulls the matching project context so the assistant reasons within the
 // product's REAL constraints (e.g. tenant-only auth, static HTML) rather than guessing.
@@ -44,6 +47,40 @@ async function callClaude(system: string, messages: { role: string; content: str
   return (data.content || []).filter((b: any) => b.type === "text").map((b: any) => b.text).join("\n").trim();
 }
 
+// ── pasted screenshots ───────────────────────────────────────────────────────
+// Same contract as design-chat: the page sends dataURLs alongside the thread; they
+// belong to the final user message of the current turn. Validate type, bound count
+// and size; anything invalid is silently dropped (the turn still goes through as text).
+const ALLOWED_IMG = new Set(["image/jpeg", "image/png", "image/webp", "image/gif"]);
+const MAX_IMAGES_PER_TURN = 4;
+const MAX_B64_LEN = 2_000_000; // ~1.5MB decoded per image — frontend downscales well below this
+
+function imageBlocksFrom(images: unknown): any[] {
+  if (!Array.isArray(images)) return [];
+  const blocks: any[] = [];
+  for (const src of images.slice(0, MAX_IMAGES_PER_TURN)) {
+    if (typeof src !== "string") continue;
+    const m = src.match(/^data:(image\/[a-z0-9+.-]+);base64,(.+)$/i);
+    if (!m) continue;
+    const media = m[1].toLowerCase();
+    if (!ALLOWED_IMG.has(media) || m[2].length > MAX_B64_LEN) continue;
+    blocks.push({ type: "image", source: { type: "base64", media_type: media, data: m[2] } });
+  }
+  return blocks;
+}
+
+function attachImagesToLastUser(convo: any[], images: unknown): void {
+  const blocks = imageBlocksFrom(images);
+  if (!blocks.length) return;
+  for (let i = convo.length - 1; i >= 0; i--) {
+    if (convo[i]?.role === "user" && typeof convo[i].content === "string") {
+      convo[i] = { role: "user", content: [...blocks, { type: "text", text: convo[i].content || "(see screenshot)" }] };
+      return;
+    }
+  }
+  convo.push({ role: "user", content: [...blocks, { type: "text", text: "(see screenshot)" }] });
+}
+
 // The scope chat can READ a file to ground a scope judgment in what actually exists — but only
 // on demand, when a turn calls for it. Scope of access = scope of the question (the model asks,
 // the human sees which file it read). Deliberately NOT a design lookup tool.
@@ -68,7 +105,7 @@ const READ_FILE_TOOL = {
 // legibility principle: a file was read because the conversation asked, and it's visible).
 async function callClaudeWithFiles(
   system: string,
-  messages: { role: string; content: string }[],
+  messages: { role: string; content: any }[],
   maxTokens: number,
   repo: string | undefined,
   branch: string,
@@ -228,6 +265,9 @@ tool to confirm whether a feature/element/page already exists (is this a real ch
 done?), or whether the idea is one change or several in the code. Read a file only to GROUND a
 scope judgment, not to make a design decision. Name the file you checked in your reply so the
 reasoning is visible.
+The user may paste screenshots (e.g. of the current UI or a competitor) — read them carefully;
+what the screenshot SHOWS is usually the point of the message. Reason about its SCOPE
+implications, not its implementation.
 If the user drifts into "how should it work," say that's design's job and steer back to scope.
 When the scope feels settled, tell the user to hit "Rewrite idea from chat" and then run design.
 
@@ -235,7 +275,9 @@ ${projectNote}
 
 CURRENT IDEA:
 ${ideaBlock(idea)}`;
-    const msgs = convo.length ? convo : [{ role: "user", content: "Let's start — is the scope of this idea right?" }];
+    const msgs: any[] = convo.length ? [...convo] : [{ role: "user", content: "Let's start — is the scope of this idea right?" }];
+    // Pasted screenshots (body.images) attach to the final user message of this turn.
+    attachImagesToLastUser(msgs, body?.images);
     // Scope grounds against SHIPPED reality → the idea's repo @ main. Non-github/design-only
     // projects simply won't offer the read_file tool (readable=false). Uses the `project`
     // resolved at the top of the handler.
