@@ -198,6 +198,7 @@
   .buildnow { margin-left: auto; font-family: var(--sans); font-size: 11px; font-weight: 700; color: #fff; background: var(--orange); border: 0; border-radius: 7px; padding: 5px 11px; cursor: pointer; }
   .buildnow:hover { background: #dd7a26; }
   .blocked-note { margin-top: 7px; font-size: 10.5px; color: #b23030; background: rgba(229,62,62,.07); border-radius: 6px; padding: 5px 7px; line-height: 1.35; }
+  .mig-note { margin-top: 7px; font-size: 10.5px; color: #835c0d; background: rgba(214,158,46,.12); border-radius: 6px; padding: 5px 7px; line-height: 1.35; }
 
   /* ── Card expand (chevron) ─────────────────────────────── */
   .chev {
@@ -466,6 +467,15 @@
 
     if (idea.blockedReason) card.appendChild(el("div", "blocked-note", "Blocked: " + idea.blockedReason));
 
+    // Staging-migration cue: a build that shipped a DB migration needs it run on STAGING
+    // Supabase BEFORE the preview is testable (staging and prod Supabase never auto-sync).
+    // The prod run is gated separately in the Promote modal; this is the staging half.
+    if (idea.pendingMigration && String(idea.pendingMigration).trim() &&
+        ["Testing", "Building", "Preview Deployed"].indexOf(idea.stage || "") >= 0) {
+      card.appendChild(el("div", "mig-note",
+        "\u26A0 Includes a DB migration \u2014 run it on STAGING Supabase before testing. SQL is in the \u201CReady to promote\u201D dialog."));
+    }
+
     // Footer: links + Decide
     var foot = el("div", "card-foot");
     var links = el("div", "links");
@@ -601,11 +611,55 @@
       a.textContent = "Open the staging preview \u2197"; a.style.color = "#245a8a"; a.style.fontWeight = "700"; a.style.textDecoration = "none";
       d.appendChild(a); m.appendChild(d);
     }
+
+    // Staging half of the migration workflow (the prod half is gated in Promote): a build
+    // that shipped a migration is untestable until the SQL runs on STAGING Supabase.
+    // Same affordances as Promote — the SQL, a Copy button, and a checkbox gate — so the
+    // outside-the-Foundry step is instructed here, not discovered by a failing smoke test.
+    var hasMigration = !!(idea.pendingMigration && String(idea.pendingMigration).trim());
+    var stgAck = null;
+    if (hasMigration) {
+      var files = (idea.migrationFiles || "migration").trim();
+      m.appendChild(warn("amber",
+        "\u26A0 This build includes a DB migration: <strong>" + files.replace(/</g, "&lt;") + "</strong>. " +
+        "Run it on <strong>STAGING Supabase</strong> before testing \u2014 without it the new feature fails on the preview. " +
+        "It runs AGAIN on prod Supabase at the Promote step. It's idempotent \u2014 safe to re-run."));
+
+      var pre = document.createElement("pre"); pre.className = "res-pre";
+      pre.textContent = idea.pendingMigration;
+      m.appendChild(pre);
+
+      var copyRow = el("div", "m-actions"); copyRow.style.justifyContent = "flex-start"; copyRow.style.marginBottom = "10px";
+      var copyBtn = el("button", "btn", "Copy SQL");
+      copyBtn.addEventListener("click", function () {
+        var done = function () { copyBtn.textContent = "Copied \u2713"; setTimeout(function () { copyBtn.textContent = "Copy SQL"; }, 1500); };
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(idea.pendingMigration).then(done, function () { fallbackCopy(pre); done(); });
+        } else { fallbackCopy(pre); done(); }
+      });
+      copyRow.appendChild(copyBtn);
+      m.appendChild(copyRow);
+
+      var ackLabel = document.createElement("label");
+      ackLabel.style.cssText = "display:flex;align-items:flex-start;gap:8px;font-size:12.5px;color:var(--ink);margin-bottom:12px;cursor:pointer;";
+      stgAck = document.createElement("input"); stgAck.type = "checkbox"; stgAck.style.marginTop = "2px"; stgAck.style.accentColor = "var(--nwd)";
+      ackLabel.appendChild(stgAck);
+      ackLabel.appendChild(el("span", null, "I've run this SQL on STAGING Supabase and tested against it (Advance stays locked until checked)."));
+      m.appendChild(ackLabel);
+    }
+
     var errLine = el("p", "m-err", ""); m.appendChild(errLine);
     var actions = el("div", "m-actions");
     var cancel = el("button", "btn", "Cancel"); cancel.addEventListener("click", closeModal); actions.appendChild(cancel);
     var go = el("button", "btn primary", "Advance \u2192");
-    go.addEventListener("click", function () { runAdvance(idea, go, errLine); });
+    if (hasMigration) {
+      go.disabled = true;
+      stgAck.addEventListener("change", function () { go.disabled = !stgAck.checked; });
+    }
+    go.addEventListener("click", function () {
+      if (hasMigration && (!stgAck || !stgAck.checked)) { errLine.textContent = "Confirm you've run the migration on staging first."; return; }
+      runAdvance(idea, go, errLine);
+    });
     actions.appendChild(go);
     m.appendChild(actions);
   }
