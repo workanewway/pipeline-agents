@@ -525,6 +525,56 @@ export async function getFile(repo: string, branch: string, path: string): Promi
 }
 
 // ---------------------------------------------------------------------------
+// searchFile — grep for the chats. getFile truncates at 12k chars, which makes
+// large pages (workspace.html is ~220k) unreadable; but they are perfectly
+// SEARCHABLE: fetch the full content server-side, return only matching lines
+// with line numbers. This is the cure for the recurring silent-death pattern
+// where a chat chained truncated reads hunting for a code detail and blew the
+// function's time budget. Same guards as getFile; fail-soft; failures logged.
+// ---------------------------------------------------------------------------
+export async function searchFile(repo: string, branch: string, path: string, pattern: string): Promise<string> {
+  const slug = ghRepoSlug(repo);
+  const clean = String(path || "").replace(/^\/+/, "").trim();
+  if (!clean || /\.\./.test(clean)) return `(refused: invalid path "${path}")`;
+  if (!FILE_READABLE.test(clean)) return `(refused: "${clean}" is not a searchable source file — source/config only)`;
+  const pat = String(pattern || "").trim();
+  if (!pat) return `(refused: empty search pattern)`;
+  if (pat.length > 200) return `(refused: pattern too long)`;
+
+  const token = process.env.GITHUB_DISPATCH_TOKEN;
+  if (!token) {
+    console.error(`[searchFile] GITHUB_DISPATCH_TOKEN not set — cannot search ${slug}#${branch}:${clean}`);
+    return `(search unavailable: GITHUB_DISPATCH_TOKEN not set)`;
+  }
+
+  try {
+    const encPath = clean.split("/").map(encodeURIComponent).join("/");
+    const f = await ghJson(`https://api.github.com/repos/${slug}/contents/${encPath}?ref=${encodeURIComponent(branch)}`, token);
+    if (Array.isArray(f)) return `(refused: "${clean}" is a directory, not a file)`;
+    const content = f.encoding === "base64" ? Buffer.from(f.content, "base64").toString("utf8") : (f.content || "");
+
+    // Try the pattern as a regex (case-insensitive); fall back to substring.
+    let re: RegExp | null = null;
+    try { re = new RegExp(pat, "i"); } catch { re = null; }
+    const needle = pat.toLowerCase();
+
+    const lines = content.split("\n");
+    const MAX_MATCHES = 40;
+    const out: string[] = [];
+    for (let i = 0; i < lines.length && out.length < MAX_MATCHES; i++) {
+      const l = lines[i];
+      const hit = re ? re.test(l) : l.toLowerCase().includes(needle);
+      if (hit) out.push(`${i + 1}: ${l.trim().slice(0, 200)}`);
+    }
+    if (!out.length) return `SEARCH ${clean} @ ${slug}#${branch} for /${pat}/ — no matches (${lines.length} lines scanned)`;
+    return `SEARCH ${clean} @ ${slug}#${branch} for /${pat}/ — ${out.length} match(es)${out.length === MAX_MATCHES ? " (capped at 40)" : ""} of ${lines.length} lines\n${out.join("\n")}`;
+  } catch (err: any) {
+    console.error(`[searchFile] FAILED ${slug}#${branch}:${clean} /${pat}/ — ${String(err?.message || err)}`);
+    return `(search unavailable: ${clean} — ${String(err?.message || err)})`;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // getProjectContext — canonical-context resolution. For repo-backed projects, the canonical
 // context lives IN the build-target repo (CONTEXT.md at root) so it travels with the code,
 // follows the same branch semantics as the manifest (research reads main, design reads
