@@ -23,7 +23,7 @@
  */
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import Anthropic from "@anthropic-ai/sdk";
-import { DEFAULT_MODEL, projectByName, getFile, isGithubRepo } from "../lib/pipeline-common.js";
+import { DEFAULT_MODEL, projectByName, getFile, searchFile, isGithubRepo } from "../lib/pipeline-common.js";
 
 export const maxDuration = 60;
 
@@ -93,11 +93,33 @@ const READ_FILE_TOOL = {
     "instead of guessing (the apply.ts-vs-lock.ts trap). Paths are repo-relative — NOTE: pages " +
     "live under public/ (e.g. \"public/workspace.html\", \"public/connect.html\") and vetting " +
     "endpoints under the bracket folder (e.g. \"api/vettings/[id]/assess.ts\", " +
-    "\"api/vettings/[id]/tms.ts\"); library code is e.g. \"lib/tms.ts\".",
+    "\"api/vettings/[id]/tms.ts\"); library code is e.g. \"lib/tms.ts\". " +
+    "IMPORTANT: reads are truncated at 12,000 characters — for LARGE files (workspace.html is ~220k) " +
+    "use search_file to find the relevant lines instead of reading blind.",
   input_schema: {
     type: "object",
     properties: { path: { type: "string", description: "repo-relative file path" } },
     required: ["path"],
+  },
+};
+
+// Grep-style search — the right tool for large files. Returns matching lines with line numbers.
+const SEARCH_FILE_TOOL = {
+  name: "search_file",
+  description:
+    "Search ONE source file for a pattern (case-insensitive regex, falling back to substring) and " +
+    "return the matching lines with line numbers — like grep. THE tool for questions about large " +
+    "files that read_file truncates (e.g. \"where does renderVetting handle the fmcsa status\" → " +
+    "search public/workspace.html for \"renderVetting|fmcsa.*status\"). Fast, bounded (max 40 " +
+    "matching lines). Use this FIRST for any file over ~12k chars; follow with read_file only if " +
+    "you need surrounding context the matched lines don't show.",
+  input_schema: {
+    type: "object",
+    properties: {
+      path: { type: "string", description: "repo-relative file path" },
+      pattern: { type: "string", description: "case-insensitive regex or plain substring to find" },
+    },
+    required: ["path", "pattern"],
   },
 };
 
@@ -187,16 +209,20 @@ async function chatWithFiles(
   const convo: any[] = messages.map((m) => ({ role: m.role, content: m.content }));
   const reads: string[] = [];
   const MAX_TOOL_TURNS = 4;
+  // Time budget: past this, stop offering tools so the model MUST answer with what it
+  // has — a degraded-but-delivered reply instead of a silent death on maxDuration.
+  const TIME_BUDGET_MS = 40_000;
+  const started = Date.now();
   let lastText = "";
 
   for (let turn = 0; turn <= MAX_TOOL_TURNS; turn++) {
-    const offerTools = readable && turn < MAX_TOOL_TURNS; // final pass forces a text answer
+    const offerTools = readable && turn < MAX_TOOL_TURNS && (Date.now() - started) < TIME_BUDGET_MS;
     const resp: any = await anthropic.messages.create({
       model: DEFAULT_MODEL,
       max_tokens: 1200,
       system,
       messages: convo,
-      ...(offerTools ? { tools: [READ_FILE_TOOL as any] } : {}),
+      ...(offerTools ? { tools: [READ_FILE_TOOL as any, SEARCH_FILE_TOOL as any] } : {}),
     });
 
     lastText = (resp.content || [])
@@ -212,6 +238,11 @@ async function chatWithFiles(
         const path = String(tu.input?.path || "");
         reads.push(path);
         out = readable ? await getFile(repo!, branch, path) : "(no readable repo for this idea)";
+      } else if (tu.name === "search_file") {
+        const path = String(tu.input?.path || "");
+        const pattern = String(tu.input?.pattern || "");
+        reads.push(`${path} (search: ${pattern.slice(0, 40)})`);
+        out = readable ? await searchFile(repo!, branch, path, pattern) : "(no searchable repo for this idea)";
       }
       results.push({ type: "tool_result", tool_use_id: tu.id, content: out });
     }
