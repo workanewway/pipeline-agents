@@ -146,6 +146,10 @@ async function callClaudeWithFiles(
 
   for (let turn = 0; turn <= MAX_TOOL_TURNS; turn++) {
     const offerTools = readable && turn < MAX_TOOL_TURNS && (Date.now() - started) < TIME_BUDGET_MS;
+    // API constraint: once the transcript contains tool_use/tool_result blocks, the
+    // `tools` param is REQUIRED on every call. So on the forced-final turn we keep the
+    // tools DEFINED but forbid their use with tool_choice "none" — omitting tools here
+    // 400s the request at exactly the moment the model was about to answer.
     const r = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: {
@@ -155,7 +159,10 @@ async function callClaudeWithFiles(
       },
       body: JSON.stringify({
         model: MODEL, max_tokens: maxTokens, system, messages: convo,
-        ...(offerTools ? { tools: [READ_FILE_TOOL, SEARCH_FILE_TOOL] } : {}),
+        ...(readable ? {
+          tools: [READ_FILE_TOOL, SEARCH_FILE_TOOL],
+          ...(offerTools ? {} : { tool_choice: { type: "none" } }),
+        } : {}),
       }),
     });
     if (!r.ok) throw new Error(`Anthropic ${r.status}: ${await r.text()}`);
@@ -163,7 +170,7 @@ async function callClaudeWithFiles(
     const blocks = data.content || [];
     lastText = blocks.filter((b: any) => b.type === "text").map((b: any) => b.text).join("\n").trim();
 
-    if (data.stop_reason !== "tool_use") return { text: lastText, reads };
+    if (data.stop_reason !== "tool_use") break;
 
     convo.push({ role: "assistant", content: blocks });
     const results: any[] = [];
@@ -182,6 +189,13 @@ async function callClaudeWithFiles(
       results.push({ type: "tool_result", tool_use_id: tu.id, content: out });
     }
     convo.push({ role: "user", content: results });
+  }
+  // Never return a blank answer: if the loop ended without text (exhausted turns or an
+  // empty final response), say what happened and what was inspected.
+  if (!lastText) {
+    lastText = "I ran out of inspection budget before finishing the answer. What I checked: "
+      + (reads.length ? reads.join("; ") : "(nothing)")
+      + ". Ask me to continue from here — I'll answer from these findings without re-searching.";
   }
   return { text: lastText, reads };
 }
