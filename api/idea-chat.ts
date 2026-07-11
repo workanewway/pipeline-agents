@@ -27,7 +27,7 @@
 // the thin static stub with a visible failure note.
 
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { projectByName, DEFAULT_MODEL, getFile, getProjectContext, isGithubRepo } from "../lib/pipeline-common.js";
+import { projectByName, DEFAULT_MODEL, getFile, searchFile, getProjectContext, isGithubRepo } from "../lib/pipeline-common.js";
 export const maxDuration = 60;
 
 const MODEL = DEFAULT_MODEL; // sonnet — good for conversational reasoning + a structured rewrite
@@ -92,11 +92,34 @@ const READ_FILE_TOOL = {
     "element/page/feature already exists (is this a real change or already done?), or whether the " +
     "idea is one coherent change or several things in the code. Do NOT use it to make design or " +
     "implementation decisions (which selector, how to wire it, whether to persist state) — those " +
-    "belong to design. Paths are repo-relative — NOTE: pages live under public/ (e.g. \"public/workspace.html\") and vetting endpoints under the bracket folder (e.g. \"api/vettings/[id]/assess.ts\").",
+    "belong to design. Paths are repo-relative — NOTE: pages live under public/ (e.g. \"public/workspace.html\") and vetting endpoints under the bracket folder (e.g. \"api/vettings/[id]/assess.ts\"). " +
+    "IMPORTANT: reads are truncated at 12,000 characters — for LARGE files (workspace.html is ~220k) " +
+    "use search_file to find the relevant lines instead of reading blind. Only files listed in the " +
+    "repo manifest exist; never guess at filenames.",
   input_schema: {
     type: "object",
     properties: { path: { type: "string", description: "repo-relative file path" } },
     required: ["path"],
+  },
+};
+
+// Grep-style search — the right tool for large files. Returns matching lines with line numbers.
+const SEARCH_FILE_TOOL = {
+  name: "search_file",
+  description:
+    "Search ONE source file for a pattern (case-insensitive regex, falling back to substring) and " +
+    "return the matching lines with line numbers — like grep. THE tool for questions about large " +
+    "files that read_file truncates (e.g. \"does workspace.html read a ?q URL param\" → search " +
+    "public/workspace.html for \"URLSearchParams|location.search\"). Fast, bounded (max 40 matching " +
+    "lines). Use this FIRST for any file over ~12k chars; follow with read_file only if you need " +
+    "surrounding context the matched lines don't show.",
+  input_schema: {
+    type: "object",
+    properties: {
+      path: { type: "string", description: "repo-relative file path" },
+      pattern: { type: "string", description: "case-insensitive regex or plain substring to find" },
+    },
+    required: ["path", "pattern"],
   },
 };
 
@@ -114,10 +137,15 @@ async function callClaudeWithFiles(
   const convo: any[] = messages.map((m) => ({ role: m.role, content: m.content }));
   const reads: string[] = [];
   const MAX_TOOL_TURNS = 4;
+  // Time budget: past this, stop offering tools so the model MUST answer with what
+  // it has — a degraded-but-delivered reply instead of the silent death that happens
+  // when chained reads of a large file blow the function's maxDuration.
+  const TIME_BUDGET_MS = 40_000;
+  const started = Date.now();
   let lastText = "";
 
   for (let turn = 0; turn <= MAX_TOOL_TURNS; turn++) {
-    const offerTools = readable && turn < MAX_TOOL_TURNS; // final pass forces a text answer
+    const offerTools = readable && turn < MAX_TOOL_TURNS && (Date.now() - started) < TIME_BUDGET_MS;
     const r = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: {
@@ -127,7 +155,7 @@ async function callClaudeWithFiles(
       },
       body: JSON.stringify({
         model: MODEL, max_tokens: maxTokens, system, messages: convo,
-        ...(offerTools ? { tools: [READ_FILE_TOOL] } : {}),
+        ...(offerTools ? { tools: [READ_FILE_TOOL, SEARCH_FILE_TOOL] } : {}),
       }),
     });
     if (!r.ok) throw new Error(`Anthropic ${r.status}: ${await r.text()}`);
@@ -145,6 +173,11 @@ async function callClaudeWithFiles(
         const path = String(tu.input?.path || "");
         reads.push(path);
         out = readable ? await getFile(repo!, branch, path) : "(no readable repo for this idea)";
+      } else if (tu.name === "search_file") {
+        const path = String(tu.input?.path || "");
+        const pattern = String(tu.input?.pattern || "");
+        reads.push(`${path} (search: ${pattern.slice(0, 40)})`);
+        out = readable ? await searchFile(repo!, branch, path, pattern) : "(no searchable repo for this idea)";
       }
       results.push({ type: "tool_result", tool_use_id: tu.id, content: out });
     }
