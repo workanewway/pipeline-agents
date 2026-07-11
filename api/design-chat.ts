@@ -217,18 +217,24 @@ async function chatWithFiles(
 
   for (let turn = 0; turn <= MAX_TOOL_TURNS; turn++) {
     const offerTools = readable && turn < MAX_TOOL_TURNS && (Date.now() - started) < TIME_BUDGET_MS;
+    // API constraint: once the transcript contains tool_use/tool_result blocks, the
+    // `tools` param is REQUIRED on every call. On forced-final turns keep tools DEFINED
+    // but forbid use with tool_choice "none" — omitting tools 400s the request.
     const resp: any = await anthropic.messages.create({
       model: DEFAULT_MODEL,
       max_tokens: 1200,
       system,
       messages: convo,
-      ...(offerTools ? { tools: [READ_FILE_TOOL as any, SEARCH_FILE_TOOL as any] } : {}),
+      ...(readable ? {
+        tools: [READ_FILE_TOOL as any, SEARCH_FILE_TOOL as any],
+        ...(offerTools ? {} : { tool_choice: { type: "none" } as any }),
+      } : {}),
     });
 
     lastText = (resp.content || [])
       .filter((b: any) => b.type === "text").map((b: any) => b.text).join("\n").trim();
 
-    if (resp.stop_reason !== "tool_use") return { text: lastText, reads };
+    if (resp.stop_reason !== "tool_use") break;
 
     convo.push({ role: "assistant", content: resp.content });
     const results: any[] = [];
@@ -247,6 +253,11 @@ async function chatWithFiles(
       results.push({ type: "tool_result", tool_use_id: tu.id, content: out });
     }
     convo.push({ role: "user", content: results });
+  }
+  if (!lastText) {
+    lastText = "I ran out of inspection budget before finishing the answer. What I checked: "
+      + (reads.length ? reads.join("; ") : "(nothing)")
+      + ". Ask me to continue from here — I'll answer from these findings without re-searching.";
   }
   return { text: lastText, reads };
 }
