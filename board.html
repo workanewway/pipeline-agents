@@ -1090,11 +1090,34 @@
   }
 
   // ── Promote (staging -> main -> production) ──────────────────────────
+  // Promote is a BRANCH action: one merge ships everything on staging. The modal
+  // is therefore a RELEASE MANIFEST: every Ready-to-Promote card ships together
+  // (listed), every pending migration in the release is gated with its own
+  // checkbox, and anything on staging that is NOT verified (Building/Testing)
+  // gets a trainload warning — this promote ships that code too.
   function openPromoteConfirm(idea) {
+    var scoped = ALL.filter(inScope);
+    var release = scoped.filter(function (i) { return (i.stage || "") === "Ready to Promote"; });
+    if (!release.length) release = [idea];
+    var untested = scoped.filter(function (i) {
+      return ["Building", "Testing", "Preview Deployed"].indexOf(i.stage || "") >= 0;
+    });
+
     var m = shell(idea);
-    m.appendChild(el("h3", null, "Promote " + idea.id + " to production?"));
-    m.appendChild(el("p", "m-sub", idea.title || ""));
+    m.appendChild(el("h3", null, release.length > 1
+      ? "Promote to production — release of " + release.length
+      : "Promote " + idea.id + " to production?"));
+    m.appendChild(el("p", "m-sub", release.length > 1
+      ? "One merge ships everything on staging. This release: " + release.map(function (i) { return i.id; }).join(", ") + ". All of them are marked Live together."
+      : (idea.title || "")));
     m.appendChild(warn("red", "<strong>This merges staging \u2192 main and deploys to PRODUCTION.</strong> Read the diff before confirming \u2014 this is the live system."));
+
+    if (untested.length) {
+      m.appendChild(warn("amber",
+        "\u26A0 Also on staging and NOT verified: <strong>" +
+        untested.map(function (i) { return i.id; }).join(", ").replace(/</g, "&lt;") +
+        "</strong>. This promote ships their code too \u2014 verify them first or hold the release."));
+    }
 
     var diff = el("div", "m-warn blue");
     var a = document.createElement("a");
@@ -1104,17 +1127,19 @@
     diff.appendChild(a);
     m.appendChild(diff);
 
-    var hasMigration = !!(idea.pendingMigration && idea.pendingMigration.trim());
-    var migAck = null; // checkbox that gates promote when there's a migration
+    // Aggregate every pending migration in the release — each gets its own SQL
+    // block, Copy button, and checkbox. One unchecked migration locks the release.
+    var withMigrations = release.filter(function (i) { return !!(i.pendingMigration && String(i.pendingMigration).trim()); });
+    var migAcks = [];
 
-    if (hasMigration) {
-      var files = (idea.migrationFiles || "migration").trim();
+    withMigrations.forEach(function (mi) {
+      var files = (mi.migrationFiles || "migration").trim();
       m.appendChild(warn("amber",
-        "\u26A0 This promote includes a DB migration: <strong>" + files.replace(/</g, "&lt;") + "</strong>. " +
+        "\u26A0 <strong>" + mi.id + "</strong> includes a DB migration: <strong>" + files.replace(/</g, "&lt;") + "</strong>. " +
         "Run it on <strong>prod Supabase</strong> FIRST (schema before code). It's idempotent \u2014 safe to re-run."));
 
       var pre = document.createElement("pre"); pre.className = "res-pre";
-      pre.textContent = idea.pendingMigration;
+      pre.textContent = mi.pendingMigration;
       m.appendChild(pre);
 
       var copyRow = el("div", "m-actions"); copyRow.style.justifyContent = "flex-start"; copyRow.style.marginBottom = "10px";
@@ -1122,7 +1147,7 @@
       copyBtn.addEventListener("click", function () {
         var done = function () { copyBtn.textContent = "Copied \u2713"; setTimeout(function () { copyBtn.textContent = "Copy SQL"; }, 1500); };
         if (navigator.clipboard && navigator.clipboard.writeText) {
-          navigator.clipboard.writeText(idea.pendingMigration).then(done, function () { fallbackCopy(pre); done(); });
+          navigator.clipboard.writeText(mi.pendingMigration).then(done, function () { fallbackCopy(pre); done(); });
         } else { fallbackCopy(pre); done(); }
       });
       copyRow.appendChild(copyBtn);
@@ -1130,22 +1155,24 @@
 
       var ackLabel = document.createElement("label");
       ackLabel.style.cssText = "display:flex;align-items:flex-start;gap:8px;font-size:12.5px;color:var(--ink);margin-bottom:12px;cursor:pointer;";
-      migAck = document.createElement("input"); migAck.type = "checkbox"; migAck.style.marginTop = "2px"; migAck.style.accentColor = "var(--nwd)";
-      ackLabel.appendChild(migAck);
-      ackLabel.appendChild(el("span", null, "I've run this SQL on prod Supabase (Promote stays locked until checked)."));
+      var ack = document.createElement("input"); ack.type = "checkbox"; ack.style.marginTop = "2px"; ack.style.accentColor = "var(--nwd)";
+      ackLabel.appendChild(ack);
+      ackLabel.appendChild(el("span", null, "I've run " + mi.id + "'s SQL on prod Supabase (Promote stays locked until every migration is checked)."));
       m.appendChild(ackLabel);
-    }
+      migAcks.push(ack);
+    });
 
     var errLine = el("p", "m-err", ""); m.appendChild(errLine);
     var actions = el("div", "m-actions");
     var cancel = el("button", "btn", "Cancel"); cancel.addEventListener("click", closeModal); actions.appendChild(cancel);
-    var go = el("button", "btn primary go", "Promote to production");
-    if (hasMigration) {
+    var go = el("button", "btn primary go", release.length > 1 ? "Promote release (" + release.length + ")" : "Promote to production");
+    var allAcked = function () { return migAcks.every(function (c) { return c.checked; }); };
+    if (migAcks.length) {
       go.disabled = true;
-      migAck.addEventListener("change", function () { go.disabled = !migAck.checked; });
+      migAcks.forEach(function (c) { c.addEventListener("change", function () { go.disabled = !allAcked(); }); });
     }
     go.addEventListener("click", function () {
-      if (hasMigration && (!migAck || !migAck.checked)) { errLine.textContent = "Confirm you've run the migration first."; return; }
+      if (migAcks.length && !allAcked()) { errLine.textContent = "Confirm every migration has been run first."; return; }
       runPromote(idea.id, go, errLine);
     });
     actions.appendChild(go);
@@ -1166,7 +1193,11 @@
       .then(function (res) {
         if (!res.ok || !res.j || res.j.ok === false) throw new Error((res.j && res.j.error) || "Promote failed");
         closeModal(); load();
-        showToast(id + (res.j.merged ? " promoted \u2192 production deploying" : " \u2014 main already up to date") + (res.j.warning ? " (" + res.j.warning + ")" : ""));
+        var n = (res.j.released && res.j.released.length) || 1;
+        showToast(
+          (n > 1 ? "Release of " + n + " promoted (" + res.j.released.join(", ") + ")" : id + " promoted")
+          + (res.j.merged ? " \u2192 production deploying" : " \u2014 main already up to date")
+          + (res.j.warning ? " (" + res.j.warning + ")" : ""));
       })
       .catch(function (e) { go.disabled = false; go.textContent = "Try again"; errLine.textContent = e.message; });
   }
