@@ -82,7 +82,7 @@
     display:flex;gap:10px;align-items:center}
   .ghost{background:none;border:1px solid var(--line);color:var(--ink-dim)}
   .ghost:hover{border-color:var(--ink-faint);color:var(--ink)}
-  .primary{background:var(--ok);color:#04210f}
+  .primary{background:#3182CE;color:#fff}
   .primary:disabled{opacity:.4;cursor:default}
   .run-design{background:var(--signal);color:#1a1205;font-family:var(--sans);font-size:13px;
     font-weight:600;border:none;border-radius:9px;padding:10px 16px;cursor:pointer;white-space:nowrap}
@@ -122,6 +122,48 @@
   .verdict-row button{padding:8px 14px;border-radius:8px;font:inherit;font-size:13px;cursor:pointer}
   .vmsg{margin-top:8px;font-size:13px;color:var(--muted);min-height:16px}
   .vnote{font-size:13px;color:var(--muted);margin:0 0 4px}
+
+  /* ── header action bar (the verdict grammar) ─────────────────────────
+     Verdicts act on the IDEA, so they live in the header next to its ID and
+     title — one fixed location across every stage, stage-aware contents.
+     Grammar: blue = moves the card forward in the pipeline; ghost = corrective/
+     backward/neutral; red = terminal. Rightmost = forward. Green is reserved
+     for Promote (production), which doesn't exist in this view.            */
+  .hactions{display:flex;align-items:center;gap:8px;flex:none;margin-left:8px}
+  .hbtn{font-family:var(--sans);font-size:12.5px;font-weight:600;border-radius:8px;
+    padding:7px 13px;cursor:pointer;background:none;border:1px solid var(--line);
+    color:var(--ink-dim);white-space:nowrap}
+  .hbtn:hover{border-color:var(--ink-faint);color:var(--ink)}
+  .hbtn.fwd{background:#3182CE;border-color:#3182CE;color:#fff}
+  .hbtn.fwd:hover{background:#2c74bb;border-color:#2c74bb}
+  .hbtn:disabled{opacity:.5;cursor:default}
+  .hstatus{font-size:12px;color:var(--ink-faint);white-space:nowrap;margin-left:8px}
+
+  /* verdict dialog: every verdict confirms, echoing the idea (T2), and
+     Revise collects its feedback here — no findings box parked on the page. */
+  .voverlay{position:fixed;inset:0;background:rgba(10,12,16,.55);z-index:80;
+    display:flex;align-items:center;justify-content:center;padding:20px}
+  .vdialog{width:100%;max-width:460px;background:var(--panel);border:1px solid var(--line);
+    border-radius:14px;padding:18px 20px 20px;box-shadow:0 20px 50px rgba(0,0,0,.45)}
+  .vdialog .d-id{font-family:var(--mono);font-size:11px;color:var(--signal);letter-spacing:.04em}
+  .vdialog h3{font-size:15px;font-weight:650;margin:6px 0 2px;color:var(--ink)}
+  .vdialog .d-title{font-size:13px;color:var(--ink-dim);margin:0 0 12px;line-height:1.45}
+  .vdialog .d-body{font-size:12.5px;color:var(--ink-dim);line-height:1.5;margin:0 0 12px}
+  .vdialog textarea{width:100%;box-sizing:border-box;min-height:96px;resize:vertical;
+    background:var(--panel-2);border:1px solid var(--line);border-radius:9px;color:var(--ink);
+    font:inherit;font-size:13px;padding:9px 11px;margin-bottom:12px}
+  .vdialog textarea:focus{outline:none;border-color:var(--ink-faint)}
+  .d-err{font-size:12px;color:#fca5a5;min-height:16px;margin:0 0 8px}
+  .d-actions{display:flex;gap:8px;justify-content:flex-end}
+  .d-actions button{font-family:var(--sans);font-size:13px;font-weight:600;border-radius:9px;
+    padding:9px 16px;cursor:pointer;border:1px solid var(--line);background:none;color:var(--ink-dim)}
+  .d-actions button:hover{border-color:var(--ink-faint);color:var(--ink)}
+  .d-actions .d-go{border:0;color:#fff;background:#3182CE}
+  .d-actions .d-go:hover{background:#2c74bb}
+  .d-actions .d-go.danger{background:#e05252}
+  .d-actions .d-go.danger:hover{background:#c94444}
+  .d-actions .d-go.neutral{background:var(--you);color:var(--ink);border:1px solid var(--line)}
+  .d-actions button:disabled{opacity:.5;cursor:default}
 </style>
 </head>
 <body>
@@ -131,6 +173,7 @@
     <h1 id="title">Loading…</h1>
     <span class="chip" id="product"></span>
     <span class="chip stage" id="stage"></span>
+    <div class="hactions" id="hActions"></div>
   </header>
 
   <main>
@@ -142,30 +185,6 @@
         <div class="block" id="dScopeBlock" style="display:none"><h2>Locked scope</h2><div class="oq" id="dScopeBox"></div></div>
         <div class="block"><h2>Design brief</h2><div class="prose" id="brief">—</div></div>
         <div class="block"><h2>Build sequence</h2><div class="seq" id="seq">—</div></div>
-        <div class="block verdict" id="verdictBlock" style="display:none">
-          <h2 id="verdictHead">Your call</h2>
-          <div id="designVerdicts">
-            <textarea id="vFeedback" rows="2" placeholder="Optional note / reason (required to send back to research)"></textarea>
-            <div class="verdict-row">
-              <button class="primary" id="vApprove">Approve → build</button>
-              <button class="ghost" id="vRevise">Send back to Research</button>
-              <button class="ghost" id="vDecline">Decline</button>
-              <button class="ghost" id="vHold">Hold</button>
-            </div>
-          </div>
-          <div id="advanceVerdict" style="display:none">
-            <p class="vnote">Build preview is ready. Verify it against the staging preview, then release the hold — or send testing findings back for a rebuild.</p>
-            <textarea id="vBuildFeedback" rows="2" placeholder="Testing findings (required for Revise build) — be precise and additive; the rebuild applies ONLY these adjustments to the work already on staging"></textarea>
-            <div class="verdict-row">
-              <button class="primary" id="vAdvance">Advance to Ready to Promote →</button>
-              <button class="ghost" id="vReviseBuild">Revise build ↺</button>
-            </div>
-          </div>
-          <div id="readonlyVerdict" style="display:none">
-            <p class="vnote" id="readonlyNote"></p>
-          </div>
-          <div class="vmsg" id="vMsg"></div>
-        </div>
       </div>
     </section>
 
@@ -295,8 +314,7 @@ async function load(){
     if(!inDesign){ renderReadOnly(idea); return; }
 
     $('back').href = homeHref;
-    $('verdictBlock').style.display = '';   // design workspace: the human's actions live here now
-    setVerdictMode(idea.stage);             // ...but WHICH actions depend on the stage
+    renderHeaderActions(idea.stage);    // verdicts live in the header now — one place, stage-aware
     $('openQ').textContent = idea.openQuestions || '(none recorded)';
     // Surface the locked scope BESIDE the design output — the human's drift check
     // happens here, at the Approve decision, with the boundary in view. No lock,
@@ -660,63 +678,142 @@ $('send').onclick = send;
 $('rewrite').onclick = rewrite;
 $('save').onclick = save;
 
-// Human verdict, applied synchronously via the BOARD_KEY-gated /api/decide. Approve
-// moves the card to "Approved" (the watcher fires the build); the others route per the
-// stage contract. Then we return to the board.
-async function decide(verdict){
-  // Revise Build reads its own findings box (the Testing card); everything else
-  // reads the design-verdict note box.
-  const fbEl = (verdict === 'Revise Build') ? $('vBuildFeedback') : $('vFeedback');
-  const feedback = ((fbEl && fbEl.value) || '').trim();
-  if(verdict==='Revise Research' && !feedback){ $('vMsg').textContent = 'Add a note so the redo has direction.'; $('vFeedback').focus(); return; }
-  if(verdict==='Revise Build' && !feedback){ $('vMsg').textContent = 'Describe the testing findings so the rebuild has direction.'; fbEl.focus(); return; }
-  if(verdict==='Decline' && !confirm('Decline this idea? It moves to Declined (terminal).')) return;
-  const btns = document.querySelectorAll('#verdictBlock button'); btns.forEach(b=>b.disabled=true);
-  $('vMsg').textContent = 'Saving your call…';
-  try{
-    const r = await fetch('/api/decide?key=' + encodeURIComponent(KEY),{method:'POST',headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ id: idea.ideaId, verdict, feedback })});
-    const j = await r.json();
-    if(!j.ok) throw new Error(j.error||'decide failed');
-    $('vMsg').textContent = (verdict === 'Revise Build' && j.stage === 'Approved')
-      ? 'Done — queued for rebuild with your findings (watcher fires on next run, or hit Submit on the board). Back to the board…'
-      : 'Done — now at “' + j.stage + '”. Back to the board…';
-    setTimeout(()=>{ location.href = homeHref; }, 950);
-  }catch(e){ $('vMsg').textContent = e.message; btns.forEach(b=>b.disabled=false); }
-}
-$('vApprove').onclick = ()=>decide('Approve');
-$('vRevise').onclick  = ()=>decide('Revise Research');
-$('vDecline').onclick = ()=>decide('Decline');
-$('vHold').onclick    = ()=>decide('Hold');
-$('vAdvance').onclick = ()=>decide('Advance');
-$('vReviseBuild').onclick = ()=>decide('Revise Build');
-
-// The design workspace renders for any post-scope card (it has a brief), but the ACTION
-// it offers must match the stage — otherwise opening a Testing card and hitting "Approve"
-// regresses it to Approved. Designing -> design verdicts; Testing/Building -> advance the
-// hold OR send findings back for a rebuild; everything else -> read-only status note
-// (those moves are the watcher's or a board promote, not a resolve action).
-function setVerdictMode(stage){
+// ── Verdict grammar ─────────────────────────────────────────────────────────
+// Verdicts render in the HEADER, next to the idea's ID and title (you can't act
+// without the idea in your eyeline). Stage-aware; rightmost = forward (blue);
+// corrective/backward = ghost. Every consequential verdict confirms through a
+// dialog that echoes the idea (T2); Revise verdicts collect their feedback IN
+// the dialog — no findings box parked on the page. Hold is T1 (instant).
+function renderHeaderActions(stage){
   const s = (stage||'').trim();
-  const show = (id,on)=>{ const e=$(id); if(e) e.style.display = on ? '' : 'none'; };
+  const bar = $('hActions');
+  bar.innerHTML = '';
+  const btn = (label, cls, onclick) => {
+    const b = document.createElement('button');
+    b.className = 'hbtn' + (cls ? ' ' + cls : '');
+    b.textContent = label;
+    b.onclick = onclick;
+    bar.appendChild(b);
+    return b;
+  };
   const design  = (s === 'Designing' || s === 'In Review');                 // tolerate legacy
   const testing = (s === 'Testing' || s === 'Building' || s === 'Preview Deployed');
-  show('designVerdicts', design);
-  show('advanceVerdict', testing);
-  show('readonlyVerdict', !design && !testing);
-  if(design)       $('verdictHead').textContent = 'Your call';
-  else if(testing) $('verdictHead').textContent = 'Verify & advance';
-  else {
-    $('verdictHead').textContent = 'Status';
+
+  if (design) {
+    // corrective left → forward rightmost
+    btn('Hold', '', () => decide('Hold', ''));                              // T1: instant
+    btn('Decline', '', () => openVerdictDialog({
+      heading: 'Decline this idea?',
+      body: 'Moves it to Declined (terminal).',
+      confirmLabel: 'Decline', confirmClass: 'danger', verdict: 'Decline',
+    }));
+    btn('Send back to Research ↺', '', () => openVerdictDialog({
+      heading: 'Send back to Research?',
+      body: 'Routes the idea back to Enriching for another research pass. Feedback is required so the redo has direction.',
+      requireText: true, placeholder: 'What should the redo get right?',
+      confirmLabel: 'Send back', confirmClass: 'neutral', verdict: 'Revise Research',
+    }));
+    btn('Approve → build', 'fwd', () => openVerdictDialog({
+      heading: 'Approve for build?',
+      body: 'Queues the build — the watcher fires it on its next run (or Build now / Submit on the board). The autonomous build spends API credits and commits to staging.',
+      confirmLabel: 'Approve → build', verdict: 'Approve',
+    }));
+  } else if (testing) {
+    btn('Revise build ↺', '', () => openVerdictDialog({
+      heading: 'Revise build?',
+      body: 'Sends testing findings back for a rebuild. The rebuild applies ONLY these adjustments to the work already committed on staging — be precise and additive. The spec is not regenerated.',
+      requireText: true, placeholder: 'Testing findings — what must the rebuild adjust?',
+      confirmLabel: 'Revise build ↺', confirmClass: 'neutral', verdict: 'Revise Build',
+    }));
+    btn('Advance to Ready to Promote →', 'fwd', () => openVerdictDialog({
+      heading: 'Advance to Ready to Promote?',
+      body: 'Confirms you\u2019ve verified the staging preview. Moves the idea to the promotion queue \u2014 it does NOT deploy to production (Promote is the separate step, on the board).',
+      confirmLabel: 'Advance →', verdict: 'Advance',
+    }));
+  } else {
     const note = {
-      'Approved': 'Approved — the watcher fires the build on its next run (or hit Submit on the board to fire now). Nothing to do here.',
-      'Ready to Promote': 'Ready to Promote — promote to production from the board when you’re ready.',
+      'Approved': 'Approved — the watcher fires the build on its next run (or Build now on the board).',
+      'Ready to Promote': 'Ready to Promote — promote to production from the board.',
       'Live': 'Live in production.',
       'Declined': 'Declined.',
       'Blocked': 'Blocked — see the board for the reason.'
     }[s] || 'No resolve action at this stage.';
-    $('readonlyNote').textContent = note;
+    const span = document.createElement('span');
+    span.className = 'hstatus';
+    span.textContent = note;
+    bar.appendChild(span);
   }
+}
+
+// One dialog for every verdict: echoes the idea ID + title (the wrong-idea guard),
+// optionally collects required feedback, posts /api/decide, reports errors inline.
+let _vOverlay = null;
+function closeVerdictDialog(){ if(_vOverlay){ _vOverlay.remove(); _vOverlay = null; } }
+function openVerdictDialog(opts){
+  closeVerdictDialog();
+  const ov = document.createElement('div'); ov.className = 'voverlay';
+  const d = document.createElement('div'); d.className = 'vdialog';
+
+  const id = document.createElement('div'); id.className = 'd-id'; id.textContent = idea.ideaId;
+  const h = document.createElement('h3'); h.textContent = opts.heading;
+  const t = document.createElement('p'); t.className = 'd-title'; t.textContent = idea.title || '';
+  const b = document.createElement('p'); b.className = 'd-body'; b.textContent = opts.body || '';
+  d.appendChild(id); d.appendChild(h); d.appendChild(t); d.appendChild(b);
+
+  let ta = null;
+  if (opts.requireText) {
+    ta = document.createElement('textarea');
+    ta.placeholder = opts.placeholder || '';
+    d.appendChild(ta);
+  }
+  const err = document.createElement('p'); err.className = 'd-err'; d.appendChild(err);
+
+  const actions = document.createElement('div'); actions.className = 'd-actions';
+  const cancel = document.createElement('button'); cancel.textContent = 'Cancel';
+  cancel.onclick = closeVerdictDialog;
+  const go = document.createElement('button');
+  go.className = 'd-go' + (opts.confirmClass ? ' ' + opts.confirmClass : '');
+  go.textContent = opts.confirmLabel;
+  go.onclick = async () => {
+    const feedback = ta ? ta.value.trim() : '';
+    if (opts.requireText && !feedback) { err.textContent = 'Feedback is required so the redo has direction.'; ta.focus(); return; }
+    go.disabled = true; cancel.disabled = true; err.textContent = '';
+    const res = await postVerdict(opts.verdict, feedback);
+    if (!res.ok) { err.textContent = res.error; go.disabled = false; cancel.disabled = false; return; }
+    go.textContent = 'Done ✓';
+    setTimeout(() => { location.href = homeHref; }, 700);
+  };
+  actions.appendChild(cancel); actions.appendChild(go);
+  d.appendChild(actions);
+
+  ov.appendChild(d);
+  ov.onclick = (e) => { if (e.target === ov) closeVerdictDialog(); };
+  document.body.appendChild(ov);
+  _vOverlay = ov;
+  if (ta) ta.focus();
+}
+
+async function postVerdict(verdict, feedback){
+  try{
+    const r = await fetch('/api/decide?key=' + encodeURIComponent(KEY), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: idea.ideaId, verdict, feedback })
+    });
+    const j = await r.json();
+    if (!j.ok) return { ok: false, error: j.error || 'decide failed' };
+    return { ok: true, stage: j.stage };
+  }catch(e){ return { ok: false, error: e.message }; }
+}
+
+// T1 verdicts (Hold) fire without a dialog; errors surface as a transient header note.
+async function decide(verdict, feedback){
+  const res = await postVerdict(verdict, feedback || '');
+  const bar = $('hActions');
+  const note = document.createElement('span');
+  note.className = 'hstatus';
+  note.textContent = res.ok ? 'Held ✓' : res.error;
+  bar.appendChild(note);
+  setTimeout(() => note.remove(), 2400);
 }
 
 // Exit to the board. If we arrived from a same-origin page (the board), go back so
