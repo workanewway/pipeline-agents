@@ -80,12 +80,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(400).json({ ok: false, error: `Promote is only valid from "Ready to Promote" (idea is at "${stage}")` });
     }
 
+    // ── The release set ──────────────────────────────────────────────────
+    // Promote is a BRANCH action: the staging -> main merge ships everything on
+    // staging, so every card at Ready to Promote ships together — one merge, one
+    // release. The clicked card is just the anchor; ALL release members are
+    // marked Live with a shared release line so the record tells the truth
+    // (previously each remaining card needed its own no-op promote click).
+    const release = rows.filter((r) => r.get("Stage").trim() === "Ready to Promote");
+    const releaseIds = release.map((r) => r.get("Idea ID").trim());
+
     const project = projectByName(row.get("Product"));
     if (!project || !/github\.com\//.test(project.repo)) {
       return res.status(400).json({ ok: false, error: `no promotable GitHub repo for product "${row.get("Product")}"` });
     }
     const slug = ghRepoSlug(project.repo);
-    const log = row.get("Review Log");
 
     const mergeRes = await fetch(`https://api.github.com/repos/${slug}/merges`, {
       method: "POST",
@@ -98,7 +106,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       body: JSON.stringify({
         base: "main",
         head: "staging",
-        commit_message: `Promote ${id}: ${row.get("Title")}`.slice(0, 100),
+        commit_message: (releaseIds.length > 1
+          ? `Promote release (${releaseIds.length}): ${releaseIds.join(", ")}`
+          : `Promote ${id}: ${row.get("Title")}`).slice(0, 100),
       }),
     });
 
@@ -112,19 +122,27 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const merged = mergeRes.status === 201; // 204 = main already contained staging
 
     // Automatic back-sync (fail-soft; see backSyncStaging above).
-    const sync = await backSyncStaging(token, slug, id);
+    const sync = await backSyncStaging(token, slug, releaseIds.join(", ") || id);
 
-    await updateCells(sheets, row.rowNum, {
-      Stage: "Live",
-      "Prod URL": PROD_URL,
-      "Build Status": merged ? "promoted to production" : "promoted (main already current)",
-      "Pending Migration": "",
-      "Review Log": appendLog(log, (merged ? "Promoted to production (staging -> main merged)." : "Promote: main already up to date with staging.") + " " + sync.note),
-      "Updated At": stamp(),
-      "Decided At": stamp(),
-    });
+    const releaseNote = merged
+      ? (releaseIds.length > 1
+          ? `Promoted to production in a release of ${releaseIds.length} (${releaseIds.join(", ")}).`
+          : `Promoted to production (staging -> main merged).`)
+      : `Promote: main already up to date with staging.`;
 
-    return res.status(200).json({ ok: true, merged, prodUrl: PROD_URL, ...(sync.ok ? {} : { warning: sync.note }) });
+    for (const r of release) {
+      await updateCells(sheets, r.rowNum, {
+        Stage: "Live",
+        "Prod URL": PROD_URL,
+        "Build Status": merged ? "promoted to production" : "promoted (main already current)",
+        "Pending Migration": "",
+        "Review Log": appendLog(r.get("Review Log"), releaseNote + " " + sync.note),
+        "Updated At": stamp(),
+        "Decided At": stamp(),
+      });
+    }
+
+    return res.status(200).json({ ok: true, merged, prodUrl: PROD_URL, released: releaseIds, ...(sync.ok ? {} : { warning: sync.note }) });
   } catch (err: any) {
     console.error("[promote] failed:", err);
     return res.status(500).json({ ok: false, error: String(err?.message || err) });
