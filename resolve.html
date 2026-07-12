@@ -699,7 +699,10 @@ function renderHeaderActions(stage){
     return b;
   };
   const design  = (s === 'Designing' || s === 'In Review');                 // tolerate legacy
-  const testing = (s === 'Testing' || s === 'Building' || s === 'Preview Deployed');
+  const testing = (s === 'Testing' || s === 'Preview Deployed');            // has a landed preview to verify
+  // NOTE: 'Building' is deliberately NOT here — a card mid-build has no preview yet,
+  // so offering Advance/Revise would let you promote something that isn't built. It
+  // falls through to the status note below.
 
   // Within Designing, the right forward action depends on whether the spec exists yet.
   // A card can sit at Designing with no brief/sequence (design agent not yet run) — then
@@ -750,6 +753,7 @@ function renderHeaderActions(stage){
     }));
   } else {
     const note = {
+      'Building': 'Build running — the agent is working. Verdicts appear once a staging preview lands (Testing).',
       'Approved': 'Approved — the watcher fires the build on its next run (or Build now on the board).',
       'Ready to Promote': 'Ready to Promote — promote to production from the board.',
       'Live': 'Live in production.',
