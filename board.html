@@ -187,10 +187,10 @@
   .chip { font-family: var(--mono); font-size: 10px; color: var(--ink-faint); display: inline-flex; align-items: center; gap: 3px; }
   .chip.warn { color: var(--amber); }
   .decide {
-    margin-left: auto; font-family: var(--sans); font-size: 11px; font-weight: 600; color: var(--action);
-    background: #fff; border: 1px solid rgba(49,130,206,.45); border-radius: 7px; padding: 4px 9px; cursor: pointer;
+    margin-left: auto; font-family: var(--sans); font-size: 11px; font-weight: 650; color: #fff;
+    background: var(--orange); border: 0; border-radius: 7px; padding: 5px 11px; cursor: pointer;
   }
-  .decide:hover { background: #f0f6fd; }
+  .decide:hover { background: #dd7a26; }
   .promote { margin-left: auto; font-family: var(--sans); font-size: 11px; font-weight: 700; color: #fff; background: var(--green); border: 0; border-radius: 7px; padding: 5px 11px; cursor: pointer; }
   .promote:hover { background: #38a169; }
   .advance { margin-left: auto; font-family: var(--sans); font-size: 11px; font-weight: 650; color: #fff; background: var(--action); border: 0; border-radius: 7px; padding: 5px 11px; cursor: pointer; }
@@ -268,6 +268,8 @@
   .btn.primary.danger:hover { background: #c53030; }
   .btn.primary.go { background: var(--green); }
   .btn.primary.go:hover { background: #38a169; }
+  .btn.primary.fire { background: var(--orange); }
+  .btn.primary.fire:hover { background: #dd7a26; }
   .btn:disabled { opacity: .5; cursor: default; }
   .m-err { font-size: 12px; color: var(--red); margin: 10px 0 0; min-height: 1px; }
   .res-line { font-family: var(--mono); font-size: 12px; color: var(--ink); background: #f7f9fc; border: 1px solid var(--line-soft); border-radius: 7px; padding: 7px 10px; }
@@ -690,7 +692,7 @@
     var errLine = el("p", "m-err", ""); m.appendChild(errLine);
     var actions = el("div", "m-actions");
     var cancel = el("button", "btn", "Cancel"); cancel.addEventListener("click", closeModal); actions.appendChild(cancel);
-    var go = el("button", "btn primary go", "Build now");
+    var go = el("button", "btn primary fire", "Build now");
     go.addEventListener("click", function () { runBuildNow(idea, go, cancel, errLine, m); });
     actions.appendChild(go);
     m.appendChild(actions);
@@ -921,7 +923,7 @@
 
     var actions = el("div", "m-actions");
     var cancel = el("button", "btn", "Cancel"); cancel.addEventListener("click", closeModal); actions.appendChild(cancel);
-    var go = el("button", "btn primary go", "Run watcher");
+    var go = el("button", "btn primary fire", "Run watcher");
     go.addEventListener("click", function () { runSubmit(go, cancel, errLine, modal); });
     actions.appendChild(go);
     modal.appendChild(actions);
@@ -1061,7 +1063,7 @@
     var errLine = el("p", "m-err", ""); m.appendChild(errLine);
     var actions = el("div", "m-actions");
     var back = el("button", "btn", "Back"); back.addEventListener("click", function () { renderCompose(text); }); actions.appendChild(back);
-    var go = el("button", "btn primary go", "Add to Captured");
+    var go = el("button", "btn primary", "Add to Captured");
     go.addEventListener("click", function () {
       var edited = {};
       for (var k in draft) edited[k] = draft[k];
