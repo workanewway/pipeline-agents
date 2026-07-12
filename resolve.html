@@ -306,12 +306,14 @@ async function load(){
     $('product').textContent = idea.product;
     $('stage').textContent = idea.stage;
 
-    // Stage-aware: a pre-design idea has no brief and no build sequence yet, so
-    // there's nothing to "resolve". Show it read-only instead of dropping into the
-    // design workspace. The moment design-brief runs (brief or sequence exists),
-    // this same screen reverts to the resolve flow below — no stage-name hardcoding.
-    const inDesign = (idea.designBrief||'').trim() || (idea.buildSequence||'').trim();
-    if(!inDesign){ renderReadOnly(idea); return; }
+    // Route by STAGE, not by content. Scope stages (Captured/Enriching) open the scope
+    // chat (renderReadOnly -> /api/idea-chat); everything from Designing on opens the
+    // design workspace (/api/design-chat). Keying off "does a build sequence exist" was a
+    // bug: a Captured card that somehow carried a sequence dropped into design mode and
+    // built the spec during intake, blurring the two phases. Stage is the authority.
+    const SCOPE_STAGES = ['Captured', 'Enriching'];
+    const inScope = SCOPE_STAGES.indexOf((idea.stage||'').trim()) >= 0;
+    if(inScope){ renderReadOnly(idea); return; }
 
     $('back').href = homeHref;
     renderHeaderActions(idea.stage);    // verdicts live in the header now — one place, stage-aware
