@@ -701,6 +701,13 @@ function renderHeaderActions(stage){
   const design  = (s === 'Designing' || s === 'In Review');                 // tolerate legacy
   const testing = (s === 'Testing' || s === 'Building' || s === 'Preview Deployed');
 
+  // Within Designing, the right forward action depends on whether the spec exists yet.
+  // A card can sit at Designing with no brief/sequence (design agent not yet run) — then
+  // it needs "Run design", exactly like the board offers, NOT "Approve" (approving an
+  // empty spec builds nothing). Once a build sequence exists, Approve is correct. This is
+  // what kept board and resolve disagreeing on a Designing card.
+  const hasSpec = !!((idea.buildSequence||'').trim() || (idea.designBrief||'').trim());
+
   if (design) {
     // corrective left → forward rightmost
     btn('Hold', '', () => decide('Hold', ''));                              // T1: instant
@@ -715,11 +722,20 @@ function renderHeaderActions(stage){
       requireText: true, placeholder: 'What should the redo get right?',
       confirmLabel: 'Send back', confirmClass: 'neutral', verdict: 'Revise Research',
     }));
-    btn('Approve → build', 'fwd', () => openVerdictDialog({
-      heading: 'Approve for build?',
-      body: 'Queues the build — the watcher fires it on its next run (or Build now / Submit on the board). The autonomous build spends API credits and commits to staging.',
-      confirmLabel: 'Approve → build', verdict: 'Approve',
-    }));
+    if (hasSpec) {
+      btn('Approve → build', 'fwd', () => openVerdictDialog({
+        heading: 'Approve for build?',
+        body: 'Queues the build — the watcher fires it on its next run (or Build now / Submit on the board). The autonomous build spends API credits and commits to staging.',
+        confirmLabel: 'Approve → build', verdict: 'Approve',
+      }));
+    } else {
+      // No spec yet — run the design agent (same job the board's "Design" button fires).
+      btn('Run design →', 'fwd', () => openVerdictDialog({
+        heading: 'Run design?',
+        body: 'Runs the design agent to generate the design brief and build sequence from the idea. This spends API credits. Once it completes, this screen shows the spec and the Approve action.',
+        confirmLabel: 'Run design →', runDesign: true,
+      }));
+    }
   } else if (testing) {
     btn('Revise build ↺', '', () => openVerdictDialog({
       heading: 'Revise build?',
@@ -780,6 +796,26 @@ function openVerdictDialog(opts){
     const feedback = ta ? ta.value.trim() : '';
     if (opts.requireText && !feedback) { err.textContent = 'Feedback is required so the redo has direction.'; ta.focus(); return; }
     go.disabled = true; cancel.disabled = true; err.textContent = '';
+
+    // Run design is a different action from a verdict: it fires the design agent
+    // (same job the board's Design button runs) rather than posting to /api/decide.
+    if (opts.runDesign) {
+      go.textContent = 'Running design…';
+      try {
+        const r = await fetch('/api/design-brief', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: idea.ideaId })
+        });
+        const j = await r.json();
+        if (!j.ok) throw new Error(j.error || 'design-brief failed');
+        go.textContent = 'Done ✓';
+        setTimeout(() => location.reload(), 700);   // reload → card now has a spec, renders Approve
+      } catch (e) {
+        err.textContent = e.message; go.disabled = false; cancel.disabled = false; go.textContent = opts.confirmLabel;
+      }
+      return;
+    }
+
     const res = await postVerdict(opts.verdict, feedback);
     if (!res.ok) { err.textContent = res.error; go.disabled = false; cancel.disabled = false; return; }
     go.textContent = 'Done ✓';
