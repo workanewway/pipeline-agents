@@ -84,6 +84,9 @@
   .ghost:hover{border-color:var(--ink-faint);color:var(--ink)}
   .primary{background:#3182CE;color:#fff}
   .primary:disabled{opacity:.4;cursor:default}
+  /* Unsaved-rewrite cue: the Save button stands out until the proposal is committed. */
+  .primary.needs-save{background:#ED8936;box-shadow:0 0 0 0 rgba(237,137,54,.6);animation:pulseSave 1.6s ease-out infinite}
+  @keyframes pulseSave{0%{box-shadow:0 0 0 0 rgba(237,137,54,.55)}70%{box-shadow:0 0 0 8px rgba(237,137,54,0)}100%{box-shadow:0 0 0 0 rgba(237,137,54,0)}}
   .run-design{background:var(--signal);color:#1a1205;font-family:var(--sans);font-size:13px;
     font-weight:600;border:none;border-radius:9px;padding:10px 16px;cursor:pointer;white-space:nowrap}
   .run-design:disabled{opacity:.5;cursor:default}
@@ -168,7 +171,7 @@
 </head>
 <body>
   <header>
-    <a class="back" id="back" href="/" title="Back to the board">‹ Board</a>
+    <a class="back" id="back" href="board.html" title="Back to the board">‹ Board</a>
     <span class="id" id="ideaId">—</span>
     <h1 id="title">Loading…</h1>
     <span class="chip" id="product"></span>
@@ -210,7 +213,7 @@
 const qs = new URLSearchParams(location.search);
 const ID = qs.get('id');
 const KEY = qs.get('key') || '';   // forwarded to BOARD_KEY-gated endpoints (/api/decide)
-const homeHref = '/' + (KEY ? ('?key=' + encodeURIComponent(KEY)) : '');
+const homeHref = 'board.html' + (KEY ? ('?key=' + encodeURIComponent(KEY)) : '');
 let idea = null;
 let messages = [];          // {role, content}
 let pendingSeq = null;      // proposed rewrite, awaiting save
@@ -330,9 +333,24 @@ async function load(){
     }
     $('brief').textContent = idea.designBrief || '(no brief yet — run design-brief first)';
     $('seq').textContent = idea.buildSequence || '(no build sequence yet)';
-    addMsg('assistant',
-      "Here's the spec. Let's settle the open questions before this builds. Ask me to think any of them through, push back on the brief, or tell me your call — then hit \"Rewrite spec from chat\" when we're done.",
-      'them');
+    var _st = (idea.stage||'').trim();
+    if (_st === 'Testing' || _st === 'Preview Deployed') {
+      // Testing phase: the work here is verifying the staging preview and, if the build
+      // drifted from the spec, recording findings for a rebuild. Point at exactly where
+      // those go — the "Revise build" action in the header (it collects the findings and
+      // sends them back; the spec is NOT regenerated). Don't show the pre-build
+      // "settle open questions" prompt, which doesn't fit this stage.
+      addMsg('assistant',
+        "This build is on the staging preview \u2014 verify it" + (idea.previewUrl ? " (Preview link is on the card/header)" : "") + ". "
+        + "If it matches the spec, use \u201CAdvance to Ready to Promote\u201D in the header. "
+        + "If the build DRIFTED from the spec, use \u201CRevise build\u201D in the header \u2014 that\u2019s where you enter the testing findings, and it sends ONLY those adjustments back for a rebuild (the spec stays as-is). "
+        + "You can also talk through what you\u2019re seeing here first if you want to sort real drift from new ideas before deciding.",
+        'them');
+    } else {
+      addMsg('assistant',
+        "Here's the spec. Let's settle the open questions before this builds. Ask me to think any of them through, push back on the brief, or tell me your call — then hit \"Rewrite spec from chat\" when we're done.",
+        'them');
+    }
   }catch(e){ showErr(e.message); }
 }
 
@@ -654,9 +672,10 @@ async function rewrite(){
     pendingSeq = j.text;
     $('seq').textContent = j.text;
     $('seq').classList.add('changed');
-    $('specNote').textContent = 'proposed — not saved';
+    $('specNote').textContent = '⚠ proposed — NOT saved yet';
     $('save').disabled = false;
-    addMsg('assistant','I rewrote the build sequence (left, highlighted) to fold in what we decided. Read it — if it’s right, Save resolved spec. If not, keep talking and rewrite again.','sys');
+    $('save').classList.add('needs-save');
+    addMsg('assistant','I drafted the rewrite on the left (highlighted) — but it is NOT saved yet; it\u2019s a proposal. Read it over, then hit \u201CSave resolved spec\u201D to commit it. If it\u2019s not right, keep talking and rewrite again. (Nothing changes in the queue until you Save.)','sys');
   }catch(e){ note.remove(); showErr(e.message); }
   $('rewrite').disabled = false;
 }
@@ -671,6 +690,7 @@ async function save(){
     if(!j.ok) throw new Error(j.error||'save failed');
     idea.buildSequence = pendingSeq; pendingSeq = null;
     $('seq').classList.remove('changed');
+    $('save').classList.remove('needs-save');
     $('specNote').textContent = 'saved ✓';
     addMsg('assistant','Saved to the queue. The build sequence is updated. When the spec is right, make your call below — “Approve → build” sends it to the build queue (the watcher fires it on its next run, or hit Submit on the board to fire now).','sys');
   }catch(e){ showErr(e.message); $('save').disabled=false; }
