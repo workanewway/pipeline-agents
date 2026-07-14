@@ -136,11 +136,15 @@ async function callClaudeWithFiles(
   const readable = !!repo && isGithubRepo(repo);
   const convo: any[] = messages.map((m) => ({ role: m.role, content: m.content }));
   const reads: string[] = [];
-  const MAX_TOOL_TURNS = 4;
+  const MAX_TOOL_TURNS = 6;
   // Time budget: past this, stop offering tools so the model MUST answer with what
   // it has — a degraded-but-delivered reply instead of the silent death that happens
   // when chained reads of a large file blow the function's maxDuration.
-  const TIME_BUDGET_MS = 40_000;
+  // Raised 40s -> 80s: the prior cap was cutting off legitimate multi-file scope
+  // inspection. The real fix is efficiency (search-first — see the tool prompts),
+  // but a modest headroom bump reduces false "ran out of budget" exits. Kept well
+  // under the function ceiling so a genuinely runaway read still fails soft, not silent.
+  const TIME_BUDGET_MS = 80_000;
   const started = Date.now();
   let lastText = "";
 
