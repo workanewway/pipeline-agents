@@ -1,894 +1,183 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Resolve · Pipeline</title>
-<style>
-  /* Operator's tool, not a marketing page. Calm graphite ground, a single
-     signal color for "your turn / decisions", monospace for the spec (it's
-     machine instructions) and a humanist sans for the conversation (it's talk).
-     The signature is the split: SPEC (the artifact) | CONVERSATION (the judgment). */
-  :root{
-    --bg:#15171c; --panel:#1c1f26; --panel-2:#21252e; --line:#2b303b;
-    --ink:#e7e9ee; --ink-dim:#9aa3b2; --ink-faint:#6b7384;
-    --signal:#ED8936;            /* NewWay accent — used only for "your move" */
-    --you:#2a3340; --them:#22262f;
-    --ok:#48BB78; --warn:#f0b429;
-    --mono:'SF Mono',ui-monospace,'Cascadia Code',Menlo,monospace;
-    --sans:'Inter',-apple-system,system-ui,sans-serif;
-  }
-  *{box-sizing:border-box}
-  html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);font-family:var(--sans);
-    -webkit-font-smoothing:antialiased}
-  body{display:flex;flex-direction:column;height:100vh;overflow:hidden}
+// api/decide.ts  ->  POST /api/decide
+//
+// Applies a human review verdict SYNCHRONOUSLY and sets Stage directly. This replaces
+// the old "write the Review column, let the watcher route it later" pattern: a verdict
+// is a human decision made at the keyboard (in resolve.html), so it takes effect the
+// moment it's made — same pattern as "Run design". The watcher no longer routes verdicts;
+// it only fires builds for cards already at Stage="Approved".
+//
+// POST { id, verdict, feedback? }
+//   "Approve"          -> Stage "Approved"   (watcher fires the build on its next run / Submit)
+//   "Revise Research"  -> Stage "Enriching"  (the idea/research is wrong; re-enrich) + Revisions+1
+//   "Revise Build"     -> Stage "Approved"   (the BUILD drifted from a correct spec; rebuild with
+//                         the testing findings) + Revisions+1. Only valid from a build-done stage.
+//                         The feedback travels INSIDE the Build Sequence column as a delimited
+//                         revision preamble — the watcher's dispatch payload and the build
+//                         workflow's prompt already carry Build Sequence, so no watcher or
+//                         workflow change is needed. The preamble tells the agent the prior
+//                         build is already committed on staging and to apply ONLY the
+//                         adjustments — preventing the honest "already implemented" no-op.
+//                         A later revision REPLACES the preamble (never stacks).
+//                         Unlike Revise Research, the design brief is NOT regenerated:
+//                         the spec was right; the implementation drifted.
+//   "Decline"          -> Stage "Declined"   (terminal)
+//   "Hold"             -> stays put, logged
+// Loop guard: a Revise at MAX_REVISIONS routes to "Blocked" instead of looping again.
+//
+// ("Revise Design" is NOT a verdict here — when the spec is wrong the human is already in
+//  the design workspace and re-runs design / rewrites it in place, via /api/design-brief.)
 
-  /* top bar */
-  header{display:flex;align-items:center;gap:14px;padding:12px 20px;border-bottom:1px solid var(--line);
-    background:var(--panel);flex:none}
-  .id{font-family:var(--mono);font-size:12px;color:var(--signal);letter-spacing:.04em}
-  header h1{font-size:15px;font-weight:600;margin:0;flex:1;min-width:0;white-space:nowrap;
-    overflow:hidden;text-overflow:ellipsis}
-  .chip{font-size:11px;color:var(--ink-dim);border:1px solid var(--line);border-radius:999px;
-    padding:3px 9px;white-space:nowrap}
-  .chip.stage{color:var(--ink);border-color:var(--signal)}
-  .back{font-size:13px;color:var(--ink-dim);text-decoration:none;border:1px solid var(--line);
-    border-radius:8px;padding:5px 11px;white-space:nowrap;display:inline-flex;align-items:center;
-    gap:5px;flex:none}
-  .back:hover{border-color:var(--ink-faint);color:var(--ink)}
+import type { VercelRequest, VercelResponse } from "@vercel/node";
+import { getSheets, readQueue, updateCells } from "../lib/pipeline-common.js";
+export const maxDuration = 30;
 
-  /* split */
-  main{flex:1;display:grid;grid-template-columns:1fr 1fr;min-height:0}
-  .col{min-height:0;display:flex;flex-direction:column;overflow:hidden}
-  .col.spec{border-right:1px solid var(--line)}
-  .col-head{padding:10px 18px;font-size:11px;letter-spacing:.12em;text-transform:uppercase;
-    color:var(--ink-faint);border-bottom:1px solid var(--line);flex:none;display:flex;
-    align-items:center;justify-content:space-between}
-  .col-body{overflow-y:auto;padding:18px;flex:1}
+const MAX_REVISIONS = 3;
 
-  /* spec side */
-  .block{margin-bottom:22px}
-  .block h2{font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-faint);
-    margin:0 0 8px}
-  .prose{font-size:13.5px;line-height:1.55;color:var(--ink-dim);white-space:pre-wrap}
-  .seq{font-family:var(--mono);font-size:12.5px;line-height:1.6;color:var(--ink);white-space:pre-wrap;
-    background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px}
-  .seq.changed{border-color:var(--signal);box-shadow:0 0 0 1px var(--signal) inset}
-  .oq{background:var(--panel-2);border-left:2px solid var(--signal);border-radius:0 8px 8px 0;
-    padding:12px 14px;font-size:13.5px;line-height:1.55;color:var(--ink);white-space:pre-wrap}
+// Delimiters for the Revise Build preamble injected into Build Sequence. The END line
+// doubles as the strip marker so a second revision replaces (not stacks) the first.
+// IMPORTANT: must NOT start with '=', '+', '-', or '@' — the queue is a Google Sheet,
+// and a cell value starting with those characters is parsed as a formula (a leading
+// '===' renders the whole cell as #ERROR! and poisons the watcher's dispatch payload).
+const REV_START = "### BUILD REVISION";
+const REV_END = "### END REVISION — original build sequence follows for context ###";
 
-  /* chat side */
-  .thread{flex:1;overflow-y:auto;padding:18px;display:flex;flex-direction:column;gap:14px}
-  .msg{max-width:88%;font-size:13.5px;line-height:1.55;padding:11px 14px;border-radius:12px;
-    white-space:pre-wrap;word-wrap:break-word}
-  .msg.you{align-self:flex-end;background:var(--you);border-bottom-right-radius:4px}
-  .msg.them{align-self:flex-start;background:var(--them);border-bottom-left-radius:4px;color:var(--ink-dim)}
-  .msg.sys{align-self:center;font-size:11.5px;color:var(--ink-faint);background:none;padding:2px}
-  .reads{align-self:flex-start;font-size:11px;color:var(--ink-faint);font-family:var(--mono,ui-monospace,monospace);
-    background:none;padding:1px 4px 4px;margin-top:-4px}
-  .typing{align-self:flex-start;color:var(--ink-faint);font-size:12px;padding:4px 14px}
+const sheets = getSheets();
+const stamp = () => new Date().toISOString();
+const appendLog = (existing: string, line: string) => {
+  const entry = `[${stamp()}] ${line}`;
+  return existing ? `${existing}\n${entry}` : entry;
+};
 
-  .composer{flex:none;border-top:1px solid var(--line);padding:12px;background:var(--panel);
-    display:flex;gap:10px;align-items:flex-end}
-  textarea{flex:1;resize:none;background:var(--panel-2);border:1px solid var(--line);border-radius:10px;
-    color:var(--ink);font-family:var(--sans);font-size:13.5px;line-height:1.5;padding:10px 12px;
-    max-height:140px;outline:none}
-  textarea:focus{border-color:var(--ink-faint)}
-  button{font-family:var(--sans);font-size:13px;font-weight:600;border:none;border-radius:9px;
-    padding:10px 14px;cursor:pointer;white-space:nowrap}
-  .send{background:var(--signal);color:#1a1205}
-  .send:disabled{opacity:.4;cursor:default}
-  .actions{flex:none;border-top:1px solid var(--line);padding:12px 18px;background:var(--panel);
-    display:flex;gap:10px;align-items:center}
-  .ghost{background:none;border:1px solid var(--line);color:var(--ink-dim)}
-  .ghost:hover{border-color:var(--ink-faint);color:var(--ink)}
-  .primary{background:#3182CE;color:#fff}
-  .primary:disabled{opacity:.4;cursor:default}
-  /* Unsaved-rewrite cue: the Save button stands out until the proposal is committed. */
-  .primary.needs-save{background:#ED8936;box-shadow:0 0 0 0 rgba(237,137,54,.6);animation:pulseSave 1.6s ease-out infinite}
-  @keyframes pulseSave{0%{box-shadow:0 0 0 0 rgba(237,137,54,.55)}70%{box-shadow:0 0 0 8px rgba(237,137,54,0)}100%{box-shadow:0 0 0 0 rgba(237,137,54,0)}}
-  .run-design{background:var(--signal);color:#1a1205;font-family:var(--sans);font-size:13px;
-    font-weight:600;border:none;border-radius:9px;padding:10px 16px;cursor:pointer;white-space:nowrap}
-  .run-design:disabled{opacity:.5;cursor:default}
-  .edit{display:block;width:100%;min-height:52px;background:var(--panel);border:1px solid var(--line);
-    border-radius:8px;color:var(--ink);font-family:var(--sans);font-size:13.5px;line-height:1.55;
-    padding:12px 14px;resize:none;outline:none;overflow:hidden;white-space:pre-wrap}
-  .edit:focus{border-color:var(--ink-faint)}
-  .edit.oqedit{background:var(--panel-2);border-left:2px solid var(--signal);border-radius:0 8px 8px 0}
-  .hint{font-size:11.5px;color:var(--ink-faint);flex:1}
-  .err{color:#fca5a5;font-size:12px;padding:0 18px 10px}
+export default async function handler(req: VercelRequest, res: VercelResponse) {
+  if (req.method !== "POST") return res.status(405).json({ ok: false, error: "POST only" });
 
-  /* pasted-screenshot strip (above the composer) */
-  .attach-strip{display:none;gap:8px;padding:8px 12px 0;background:var(--panel);flex-wrap:wrap}
-  .attach-strip.has{display:flex}
-  .attach-thumb{position:relative;width:64px;height:64px;border:1px solid var(--line);
-    border-radius:8px;overflow:hidden;background:var(--panel-2)}
-  .attach-thumb img{width:100%;height:100%;object-fit:cover;display:block}
-  .attach-thumb button{position:absolute;top:2px;right:2px;width:18px;height:18px;line-height:16px;
-    padding:0;border-radius:50%;background:rgba(0,0,0,.65);color:#fff;font-size:12px;border:none;cursor:pointer}
-  .msg .msg-img{display:block;max-width:220px;max-height:160px;border-radius:8px;margin-top:8px;
-    border:1px solid var(--line)}
+  // This endpoint can pass the build gate (Approve -> Approved -> watcher builds), so it is
+  // ALWAYS gated and fails closed — same posture as /api/review.
+  const gate = process.env.BOARD_KEY;
+  if (!gate) return res.status(403).json({ ok: false, error: "Decisions are locked. Set BOARD_KEY in Vercel to enable them." });
+  if (req.query.key !== gate) return res.status(401).json({ ok: false, error: "Unauthorized." });
 
-  /* read-only (pre-design) view — single column, reuses the tokens above */
-  .ro-meta{display:flex;gap:32px;margin-bottom:22px}
-  .ro-meta label{display:block;font-size:11px;letter-spacing:.1em;text-transform:uppercase;
-    color:var(--ink-faint);margin-bottom:4px}
-  .ro-meta .v{font-size:14px;color:var(--ink)}
+  try {
+    const body = typeof req.body === "string" ? JSON.parse(req.body) : req.body;
+    const id = String(body?.id || "").trim();
+    const verdict = String(body?.verdict || "").trim();
+    const feedback = String(body?.feedback || "").trim();
+    if (!id) return res.status(400).json({ ok: false, error: "missing id" });
+    if (!verdict) return res.status(400).json({ ok: false, error: "missing verdict" });
 
-  @media(max-width:860px){ main{grid-template-columns:1fr;grid-template-rows:1fr 1fr}
-    .col.spec{border-right:none;border-bottom:1px solid var(--line)} }
+    const { rows } = await readQueue(sheets);
+    const row = rows.find((r) => r.get("Idea ID").trim() === id);
+    if (!row) return res.status(404).json({ ok: false, error: `idea ${id} not found` });
 
-  .verdict{border-top:1px solid var(--line);padding-top:14px;margin-top:4px}
-  .verdict textarea{width:100%;box-sizing:border-box;background:var(--panel);color:var(--ink);
-    border:1px solid var(--line);border-radius:8px;padding:8px;font:inherit;font-size:13px;resize:vertical}
-  .verdict-row{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
-  .verdict-row button{padding:8px 14px;border-radius:8px;font:inherit;font-size:13px;cursor:pointer}
-  .vmsg{margin-top:8px;font-size:13px;color:var(--muted);min-height:16px}
-  .vnote{font-size:13px;color:var(--muted);margin:0 0 4px}
+    const log = row.get("Review Log");
+    const revisions = Number(row.get("Revisions") || "0");
+    const write = (u: Record<string, string>) =>
+      updateCells(sheets, row.rowNum, { ...u, "Updated At": stamp(), "Decided At": stamp() } as any);
 
-  /* ── header action bar (the verdict grammar) ─────────────────────────
-     Verdicts act on the IDEA, so they live in the header next to its ID and
-     title — one fixed location across every stage, stage-aware contents.
-     Grammar: blue = moves the card forward in the pipeline; ghost = corrective/
-     backward/neutral; red = terminal. Rightmost = forward. Green is reserved
-     for Promote (production), which doesn't exist in this view.            */
-  .hactions{display:flex;align-items:center;gap:8px;flex:none;margin-left:8px}
-  .hbtn{font-family:var(--sans);font-size:12.5px;font-weight:600;border-radius:8px;
-    padding:7px 13px;cursor:pointer;background:none;border:1px solid var(--line);
-    color:var(--ink-dim);white-space:nowrap}
-  .hbtn:hover{border-color:var(--ink-faint);color:var(--ink)}
-  .hbtn.fwd{background:#3182CE;border-color:#3182CE;color:#fff}
-  .hbtn.fwd:hover{background:#2c74bb;border-color:#2c74bb}
-  .hbtn:disabled{opacity:.5;cursor:default}
-  .hstatus{font-size:12px;color:var(--ink-faint);white-space:nowrap;margin-left:8px}
-
-  /* verdict dialog: every verdict confirms, echoing the idea (T2), and
-     Revise collects its feedback here — no findings box parked on the page. */
-  .voverlay{position:fixed;inset:0;background:rgba(10,12,16,.55);z-index:80;
-    display:flex;align-items:center;justify-content:center;padding:20px}
-  .vdialog{width:100%;max-width:460px;background:var(--panel);border:1px solid var(--line);
-    border-radius:14px;padding:18px 20px 20px;box-shadow:0 20px 50px rgba(0,0,0,.45)}
-  .vdialog .d-id{font-family:var(--mono);font-size:11px;color:var(--signal);letter-spacing:.04em}
-  .vdialog h3{font-size:15px;font-weight:650;margin:6px 0 2px;color:var(--ink)}
-  .vdialog .d-title{font-size:13px;color:var(--ink-dim);margin:0 0 12px;line-height:1.45}
-  .vdialog .d-body{font-size:12.5px;color:var(--ink-dim);line-height:1.5;margin:0 0 12px}
-  .vdialog textarea{width:100%;box-sizing:border-box;min-height:96px;resize:vertical;
-    background:var(--panel-2);border:1px solid var(--line);border-radius:9px;color:var(--ink);
-    font:inherit;font-size:13px;padding:9px 11px;margin-bottom:12px}
-  .vdialog textarea:focus{outline:none;border-color:var(--ink-faint)}
-  .d-err{font-size:12px;color:#fca5a5;min-height:16px;margin:0 0 8px}
-  .d-actions{display:flex;gap:8px;justify-content:flex-end}
-  .d-actions button{font-family:var(--sans);font-size:13px;font-weight:600;border-radius:9px;
-    padding:9px 16px;cursor:pointer;border:1px solid var(--line);background:none;color:var(--ink-dim)}
-  .d-actions button:hover{border-color:var(--ink-faint);color:var(--ink)}
-  .d-actions .d-go{border:0;color:#fff;background:#3182CE}
-  .d-actions .d-go:hover{background:#2c74bb}
-  .d-actions .d-go.danger{background:#e05252}
-  .d-actions .d-go.danger:hover{background:#c94444}
-  .d-actions .d-go.neutral{background:var(--you);color:var(--ink);border:1px solid var(--line)}
-  .d-actions button:disabled{opacity:.5;cursor:default}
-</style>
-</head>
-<body>
-  <header>
-    <a class="back" id="back" href="board.html" title="Back to the board">‹ Board</a>
-    <span class="id" id="ideaId">—</span>
-    <h1 id="title">Loading…</h1>
-    <span class="chip" id="product"></span>
-    <span class="chip stage" id="stage"></span>
-    <div class="hactions" id="hActions"></div>
-  </header>
-
-  <main>
-    <!-- SPEC: the artifact being shaped -->
-    <section class="col spec">
-      <div class="col-head"><span>The spec</span><span id="specNote"></span></div>
-      <div class="col-body">
-        <div class="block"><h2>Open questions to resolve</h2><div class="oq" id="openQ">—</div></div>
-        <div class="block" id="dScopeBlock" style="display:none"><h2>Locked scope</h2><div class="oq" id="dScopeBox"></div></div>
-        <div class="block"><h2>Design brief</h2><div class="prose" id="brief">—</div></div>
-        <div class="block"><h2>Build sequence</h2><div class="seq" id="seq">—</div></div>
-      </div>
-    </section>
-
-    <!-- CONVERSATION: where the judgment happens -->
-    <section class="col chat">
-      <div class="col-head"><span>Work it through</span><span id="chatNote"></span></div>
-      <div class="thread" id="thread"></div>
-      <div class="err" id="err" style="display:none"></div>
-      <div class="attach-strip" id="attachStrip"></div>
-      <div class="composer">
-        <textarea id="input" rows="1" placeholder="Answer, push back, decide… or type “rewrite the spec” — paste a screenshot (Ctrl+V) to show, not tell"></textarea>
-        <button class="send" id="send">Send</button>
-      </div>
-      <div class="actions">
-        <span class="hint" id="hint">Talk it through, then say “rewrite the spec” (or use the button).</span>
-        <button class="ghost" id="rewrite">Rewrite spec from chat</button>
-        <button class="primary" id="save" disabled>Save resolved spec</button>
-      </div>
-    </section>
-  </main>
-
-<script>
-const qs = new URLSearchParams(location.search);
-const ID = qs.get('id');
-const KEY = qs.get('key') || '';   // forwarded to BOARD_KEY-gated endpoints (/api/decide)
-const homeHref = 'board.html' + (KEY ? ('?key=' + encodeURIComponent(KEY)) : '');
-let idea = null;
-let messages = [];          // {role, content}
-let pendingSeq = null;      // proposed rewrite, awaiting save
-
-const $ = id => document.getElementById(id);
-const esc = s => (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;');
-
-function addMsg(role, text, cls, images){
-  const d = document.createElement('div');
-  d.className = 'msg ' + (cls || (role==='user'?'you':'them'));
-  d.textContent = text;
-  if(Array.isArray(images)){
-    images.forEach(src => {
-      const im = document.createElement('img');
-      im.className = 'msg-img'; im.src = src; im.alt = 'pasted screenshot';
-      d.appendChild(im);
-    });
-  }
-  $('thread').appendChild(d);
-  $('thread').scrollTop = $('thread').scrollHeight;
-  return d;
-}
-
-// ---- pasted screenshots (shared by both chats) ----------------------------
-// A paste of an image lands in a pending strip above the composer; Send ships
-// the pending images WITH that turn only (the backend attaches them to the
-// final user message), and history keeps a text marker so later turns stay
-// small. Images are downscaled client-side (max 1400px, JPEG) so the payload
-// stays well under Vercel's body limit.
-const MAX_IMG_DIM = 1400, MAX_IMGS_PER_TURN = 4;
-
-function downscaleImage(file){
-  return new Promise((resolve, reject) => {
-    const fr = new FileReader();
-    fr.onerror = () => reject(new Error('could not read pasted image'));
-    fr.onload = () => {
-      const img = new Image();
-      img.onerror = () => reject(new Error('could not decode pasted image'));
-      img.onload = () => {
-        const scale = Math.min(1, MAX_IMG_DIM / Math.max(img.width, img.height));
-        const w = Math.max(1, Math.round(img.width * scale));
-        const h = Math.max(1, Math.round(img.height * scale));
-        const c = document.createElement('canvas');
-        c.width = w; c.height = h;
-        c.getContext('2d').drawImage(img, 0, 0, w, h);
-        resolve(c.toDataURL('image/jpeg', 0.85));
-      };
-      img.src = fr.result;
-    };
-    fr.readAsDataURL(file);
-  });
-}
-
-// Wires paste-to-attach onto a textarea. `pending` is the caller's array of
-// dataURLs; `strip` is the thumbnail container; `onErr` reports problems.
-function wireImagePaste(textareaEl, stripEl, pending, onErr){
-  const render = () => {
-    stripEl.innerHTML = '';
-    stripEl.classList.toggle('has', pending.length > 0);
-    pending.forEach((src, i) => {
-      const t = document.createElement('div'); t.className = 'attach-thumb';
-      const im = document.createElement('img'); im.src = src; im.alt = 'screenshot ' + (i+1);
-      const x = document.createElement('button'); x.type = 'button'; x.textContent = '\u00d7';
-      x.title = 'Remove'; x.onclick = () => { pending.splice(i,1); render(); };
-      t.appendChild(im); t.appendChild(x); stripEl.appendChild(t);
-    });
-  };
-  textareaEl.addEventListener('paste', async (e) => {
-    const items = (e.clipboardData && e.clipboardData.items) || [];
-    const files = [];
-    for (const it of items){ if (it.kind === 'file' && /^image\//.test(it.type)) files.push(it.getAsFile()); }
-    if (!files.length) return;            // plain text paste — leave it alone
-    e.preventDefault();
-    for (const f of files){
-      if (pending.length >= MAX_IMGS_PER_TURN){ onErr('Max ' + MAX_IMGS_PER_TURN + ' screenshots per message.'); break; }
-      try{ pending.push(await downscaleImage(f)); }
-      catch(err){ onErr(err.message); }
-    }
-    render();
-  });
-  return render;
-}
-
-async function load(){
-  if(!ID){ $('title').textContent = 'No idea id in URL (?id=IDEA-0007)'; return; }
-  try{
-    const r = await fetch('/api/idea?id=' + encodeURIComponent(ID));
-    const j = await r.json();
-    if(!j.ok) throw new Error(j.error||'load failed');
-    idea = j.idea;
-    $('ideaId').textContent = idea.ideaId;
-    $('title').textContent = idea.title;
-    $('product').textContent = idea.product;
-    $('stage').textContent = idea.stage;
-
-    // Route by STAGE, not by content. Scope stages (Captured/Enriching) open the scope
-    // chat (renderReadOnly -> /api/idea-chat); everything from Designing on opens the
-    // design workspace (/api/design-chat). Keying off "does a build sequence exist" was a
-    // bug: a Captured card that somehow carried a sequence dropped into design mode and
-    // built the spec during intake, blurring the two phases. Stage is the authority.
-    const SCOPE_STAGES = ['Captured', 'Enriching'];
-    const inScope = SCOPE_STAGES.indexOf((idea.stage||'').trim()) >= 0;
-    if(inScope){ renderReadOnly(idea); return; }
-
-    $('back').href = homeHref;
-    renderHeaderActions(idea.stage);    // verdicts live in the header now — one place, stage-aware
-    $('openQ').textContent = idea.openQuestions || '(none recorded)';
-    // Surface the locked scope BESIDE the design output — the human's drift check
-    // happens here, at the Approve decision, with the boundary in view. No lock,
-    // no block: an unlocked idea isn't drift-checked against an invented baseline.
-    const ls = idea.lockedScope;
-    if(ls && ((Array.isArray(ls.in)&&ls.in.length) || (Array.isArray(ls.out)&&ls.out.length))){
-      const fmt = (label, arr) => (Array.isArray(arr)&&arr.length) ? label + ':\n' + arr.map(b=>'  \u2022 ' + b).join('\n') : '';
-      $('dScopeBox').textContent = [fmt('IN', ls.in), fmt('OUT', ls.out)].filter(Boolean).join('\n\n')
-        + (ls.lockedAt ? '\n\nlocked ' + String(ls.lockedAt).slice(0,10) : '');
-      $('dScopeBlock').style.display = '';
-    }
-    $('brief').textContent = idea.designBrief || '(no brief yet — run design-brief first)';
-    $('seq').textContent = idea.buildSequence || '(no build sequence yet)';
-    var _st = (idea.stage||'').trim();
-    if (_st === 'Testing' || _st === 'Preview Deployed') {
-      // Testing phase: the work here is verifying the staging preview and, if the build
-      // drifted from the spec, recording findings for a rebuild. Point at exactly where
-      // those go — the "Revise build" action in the header (it collects the findings and
-      // sends them back; the spec is NOT regenerated). Don't show the pre-build
-      // "settle open questions" prompt, which doesn't fit this stage.
-      addMsg('assistant',
-        "This build is on the staging preview \u2014 verify it" + (idea.previewUrl ? " (Preview link is on the card/header)" : "") + ". "
-        + "If it matches the spec, use \u201CAdvance to Ready to Promote\u201D in the header. "
-        + "If the build DRIFTED from the spec, use \u201CRevise build\u201D in the header \u2014 that\u2019s where you enter the testing findings, and it sends ONLY those adjustments back for a rebuild (the spec stays as-is). "
-        + "You can also talk through what you\u2019re seeing here first if you want to sort real drift from new ideas before deciding.",
-        'them');
-    } else {
-      addMsg('assistant',
-        "Here's the spec. Let's settle the open questions before this builds. Ask me to think any of them through, push back on the brief, or tell me your call — then hit \"Rewrite spec from chat\" when we're done.",
-        'them');
-    }
-  }catch(e){ showErr(e.message); }
-}
-
-// Pre-design "scope check" view. Two panes: the idea (editable) on the left, an AI
-// chat that pressure-tests the SCOPE on the right ("do we have the scope right?" — not
-// the open questions, which are design's job). "Rewrite idea from chat" folds the
-// scope decisions back into the idea before it goes to design — including the
-// machine-readable locked scope ({in:[],out:[]}) the supervisor's Phase-2 drift check
-// will diff design output against. Reuses the existing tokens/classes so it reads as
-// the same product.
-function renderReadOnly(idea){
-  const desc0     = (idea.reasoning || '').trim();
-  const aiNative0 = (idea.aiNative || '').trim();
-  const score     = (idea.priority || '').toString().trim();
-
-  const main = document.querySelector('main');
-  main.style.gridTemplateColumns = '1fr 1fr';   // idea | work-it-through chat
-  main.innerHTML = `
-    <section class="col spec">
-      <div class="col-head"><span>The idea</span><span class="chip" id="editState">editable · not yet in design</span></div>
-      <div class="col-body">
-        ${ score ? `<div class="ro-meta"><div><label>Priority</label><div class="v">${esc(score)}</div></div></div>` : '' }
-        <div class="block"><h2>Description</h2>
-          <textarea class="edit" id="editDesc" placeholder="Describe the idea…">${esc(desc0)}</textarea></div>
-        <div class="block"><h2>AI-native approach</h2>
-          <textarea class="edit" id="editAi" placeholder="How is this AI-native? (this feeds the design brief)">${esc(aiNative0)}</textarea></div>
-        <div class="block" id="scopeBlock" style="display:none"><h2 id="scopeHead">Locked scope</h2>
-          <div class="oq" id="scopeBox"></div></div>
-      </div>
-      <div class="actions">
-        <span class="hint" id="runHint">Check the scope on the right, rewrite, then run design.</span>
-        <button class="ghost" id="saveEdits" disabled>Save changes</button>
-        <button class="primary" id="runDesign">Run design →</button>
-      </div>
-    </section>
-
-    <section class="col chat">
-      <div class="col-head"><span>Scope check</span><span class="chip" id="iChatNote"></span></div>
-      <div class="thread" id="iThread"></div>
-      <div class="err" id="iErr" style="display:none"></div>
-      <div class="attach-strip" id="iAttachStrip"></div>
-      <div class="composer">
-        <textarea id="iInput" rows="1" placeholder="Push back on the scope, decide what's in and out… paste a screenshot (Ctrl+V) to show it"></textarea>
-        <button class="send" id="iSend">Send</button>
-      </div>
-      <div class="actions">
-        <span class="hint">Get the scope right, then fold the boundary into the idea.</span>
-        <button class="ghost" id="iRewrite">Rewrite idea from chat</button>
-      </div>
-    </section>`;
-
-  // ---- left pane: editable idea, save to queue, run design ----
-  const editDesc  = document.getElementById('editDesc');
-  const editAi    = document.getElementById('editAi');
-  const saveBtn   = document.getElementById('saveEdits');
-  const runBtn    = document.getElementById('runDesign');
-  const hint      = document.getElementById('runHint');
-  const stateChip = document.getElementById('editState');
-
-  let saved = { reasoning: desc0, aiNative: aiNative0 };   // last-saved values
-  let pendingScope = null;   // {in:[],out:[]} from the latest rewrite — unsaved until Save changes
-
-  // ---- locked-scope display (read-only render; the chat rewrite is the only writer) ----
-  const scopeBlock = document.getElementById('scopeBlock');
-  const scopeBox   = document.getElementById('scopeBox');
-  const scopeHead  = document.getElementById('scopeHead');
-  const renderScope = (scope, unsaved) => {
-    const inn = (scope && Array.isArray(scope.in))  ? scope.in  : [];
-    const out = (scope && Array.isArray(scope.out)) ? scope.out : [];
-    if(!inn.length && !out.length){ scopeBlock.style.display = 'none'; return; }
-    const fmt = (label, arr) => arr.length ? label + ':\n' + arr.map(b => '  \u2022 ' + b).join('\n') : '';
-    scopeBox.textContent = [fmt('IN', inn), fmt('OUT', out)].filter(Boolean).join('\n\n');
-    scopeHead.textContent = unsaved
-      ? 'Locked scope — not saved yet'
-      : 'Locked scope' + (scope.lockedAt ? ' · locked ' + String(scope.lockedAt).slice(0,10) : '');
-    scopeBlock.style.display = '';
-  };
-  renderScope(idea.lockedScope, false);
-
-  const grow = el => { el.style.height='auto'; el.style.height = el.scrollHeight + 'px'; };
-  // Current idea as edited (so the scope chat reasons over what's on screen, not stale state).
-  // Open questions aren't shown or edited here — design forms them after scope is locked.
-  const curIdea = () => ({ ...idea, reasoning: editDesc.value.trim(), aiNative: editAi.value.trim() });
-  // A pending locked scope counts as dirty: a rewrite can change ONLY the scope
-  // (identical description text), and Save must still be offered.
-  const isDirty = () =>
-    editDesc.value.trim() !== saved.reasoning ||
-    editAi.value.trim()   !== saved.aiNative ||
-    pendingScope !== null;
-  const refresh = () => {
-    saveBtn.disabled = !isDirty();
-    if(stateChip) stateChip.textContent = isDirty() ? 'unsaved changes' : 'editable · not yet in design';
-  };
-  [editDesc, editAi].forEach(el => { grow(el); el.addEventListener('input', ()=>{ grow(el); refresh(); }); });
-
-  async function saveEdits(){
-    if(!isDirty()) return;
-    const body = { id: idea.ideaId, reasoning: editDesc.value.trim(), aiNative: editAi.value.trim() };
-    if(pendingScope) body.lockedScope = pendingScope;
-    const r = await fetch('/api/idea',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-    const j = await r.json();
-    if(!j.ok) throw new Error(j.error||'save failed');
-    saved = { reasoning: body.reasoning, aiNative: body.aiNative };
-    idea.reasoning = body.reasoning; idea.aiNative = body.aiNative;
-    // The server stamps lockedAt and echoes the stored scope back — render the saved state.
-    if(j.lockedScope){ idea.lockedScope = j.lockedScope; }
-    if(pendingScope){ pendingScope = null; renderScope(idea.lockedScope, false); }
-    refresh();
-  }
-
-  saveBtn.addEventListener('click', async ()=>{
-    saveBtn.disabled = true;
-    if(hint){ hint.style.color='var(--ink-faint)'; hint.textContent='Saving…'; }
-    try{ await saveEdits(); if(hint) hint.textContent='Saved ✓'; }
-    catch(e){ saveBtn.disabled=false; if(hint){ hint.style.color='#fca5a5'; hint.textContent=e.message; } }
-  });
-
-  runBtn.addEventListener('click', async ()=>{
-    runBtn.disabled = true; saveBtn.disabled = true;
-    if(hint) hint.style.color='var(--ink-faint)';
-    try{
-      if(isDirty()){ if(hint) hint.textContent='Saving your changes…'; await saveEdits(); }
-      if(hint) hint.textContent='Running design… this can take a few seconds.';
-      const r = await fetch('/api/design-brief',{method:'POST',headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ id: idea.ideaId })});
-      const j = await r.json();
-      if(!j.ok) throw new Error(j.error||'design-brief failed');
-      location.reload();
-    }catch(e){
-      runBtn.disabled=false; refresh();
-      if(hint){ hint.style.color='#fca5a5'; hint.textContent=e.message; }
-    }
-  });
-
-  // ---- right pane: work-it-through chat (its own message array + endpoint) ----
-  const iThread  = document.getElementById('iThread');
-  const iInput   = document.getElementById('iInput');
-  const iSend    = document.getElementById('iSend');
-  const iRewrite = document.getElementById('iRewrite');
-  const iErr     = document.getElementById('iErr');
-  const iNote    = document.getElementById('iChatNote');
-  let chat = [];   // [{role:'user'|'assistant', content}] — excludes the seeded greeting
-
-  const iAdd = (cls, text, images) => {
-    const d = document.createElement('div'); d.className = 'msg ' + cls; d.textContent = text;
-    if(Array.isArray(images)){
-      images.forEach(src => {
-        const im = document.createElement('img');
-        im.className = 'msg-img'; im.src = src; im.alt = 'pasted screenshot';
-        d.appendChild(im);
-      });
-    }
-    iThread.appendChild(d); iThread.scrollTop = iThread.scrollHeight; return d;
-  };
-  const iPending = [];
-  const iRenderAttach = wireImagePaste(iInput, document.getElementById('iAttachStrip'), iPending, m => iShowErr(m));
-  // Surface which files the scope chat read to answer — the read was on-demand (a turn asked
-  // for it), so it should be visible, not hidden. Renders a small line under the reply.
-  const iReads = (reads) => {
-    if(!Array.isArray(reads) || !reads.length) return;
-    const uniq = reads.filter((p, i) => p && reads.indexOf(p) === i);
-    const d = document.createElement('div');
-    d.className = 'reads';
-    d.textContent = '\uD83D\uDCC4 read: ' + uniq.join(', ');
-    iThread.appendChild(d); iThread.scrollTop = iThread.scrollHeight;
-  };
-  const iShowErr = m => { iErr.style.display='block'; iErr.textContent = m; };
-  const iClearErr = () => { iErr.style.display='none'; };
-
-  // Open by asking the model for the sharpest SCOPE questions on THIS idea, rather
-  // than a canned greeting. Seeds the chat with that opening so follow-ups have context.
-  async function iOpen(){
-    const t = iAdd('them typing', 'reading the idea\u2026');
-    const seed = [{ role:'user', content:'Open the scope review: lead with the sharpest scope questions for this specific idea.' }];
-    try{
-      const r = await fetch('/api/idea-chat',{method:'POST',headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ mode:'chat', idea: curIdea(), messages: seed })});
-      const j = await r.json(); t.remove();
-      if(!j.ok) throw new Error(j.error||'open failed');
-      iAdd('them', j.text);
-      iReads(j.reads);
-      chat = seed.concat([{ role:'assistant', content:j.text }]);
-    }catch(e){
-      t.remove();
-      // Static fallback if the open call fails — still scope-framed, just not idea-specific.
-      iAdd('them', 'Before this goes to design, let\u2019s get the scope right \u2014 which surfaces does this cover, what\u2019s in vs out, one change or several, and is it solving the real problem or a symptom? Push back freely. The how-to-build questions come later, at design.');
-    }
-  }
-
-  async function iChat(){
-    const text = iInput.value.trim();
-    if(!text && iPending.length === 0) return;
-    // shortcut: typing "rewrite the idea" triggers the rewrite instead of a chat turn
-    if(/^rewrite( the)?( idea| it)?[.!]?$/i.test(text)){ iInput.value=''; iInput.style.height='auto'; iAdd('you', text); await iDoRewrite(); return; }
-    iClearErr();
-    const images = iPending.slice();
-    iPending.length = 0; iRenderAttach();
-    iInput.value=''; iInput.style.height='auto';
-    const shown = text || '(screenshot)';
-    iAdd('you', shown, images);
-    // History keeps a text marker; the pixels ride this request only.
-    chat.push({ role:'user', content: shown + (images.length ? '\n[' + images.length + ' screenshot(s) attached]' : '') });
-    iSend.disabled = true;
-    const t = iAdd('them typing', 'thinking…');
-    try{
-      const r = await fetch('/api/idea-chat',{method:'POST',headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ mode:'chat', idea: curIdea(), messages: chat, images })});
-      const j = await r.json(); t.remove();
-      if(!j.ok) throw new Error(j.error||'chat failed');
-      iAdd('them', j.text); iReads(j.reads); chat.push({ role:'assistant', content:j.text });
-    }catch(e){ t.remove(); iShowErr(e.message); }
-    iSend.disabled = false; iInput.focus();
-  }
-
-  async function iDoRewrite(){
-    if(chat.length === 0){ iShowErr('Talk the questions through first — there\u2019s nothing to rewrite from yet.'); return; }
-    iClearErr(); iRewrite.disabled = true;
-    const t = iAdd('them typing', 'rewriting the idea…');
-    try{
-      const r = await fetch('/api/idea-chat',{method:'POST',headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ mode:'rewrite', idea: curIdea(), messages: chat })});
-      const j = await r.json(); t.remove();
-      if(!j.ok) throw new Error(j.error||'rewrite failed');
-      const ni = j.idea || {};
-      if(typeof ni.reasoning === 'string'){ editDesc.value = ni.reasoning; grow(editDesc); }
-      if(typeof ni.aiNative === 'string'){ editAi.value = ni.aiNative; grow(editAi); }
-      // Machine-readable locked scope: held as PENDING (rendered, counted as dirty)
-      // until Save changes writes it — same review-then-save gate as the text.
-      if(ni.lockedScope && ((Array.isArray(ni.lockedScope.in) && ni.lockedScope.in.length) ||
-                            (Array.isArray(ni.lockedScope.out) && ni.lockedScope.out.length))){
-        pendingScope = { in: ni.lockedScope.in || [], out: ni.lockedScope.out || [] };
-        renderScope(pendingScope, true);
+    switch (verdict) {
+      case "Approve":
+      case "Approved": {
+        await write({ Stage: "Approved", Review: "Pending",
+          "Review Log": appendLog(log, `Approved — queued for build (watcher fires on next run / Submit).${feedback ? " Note: " + feedback : ""}`) });
+        return res.status(200).json({ ok: true, id, stage: "Approved" });
       }
-      refresh();
-      if(iNote) iNote.textContent = 'rewritten · review & save';
-      iAdd('them', 'I rewrote the idea on the left from where we landed on scope \u2014 sharpened the description, the in/out boundary, and the locked-scope record below it (that\u2019s what design output gets checked against later). Read it over; if it\u2019s right, Save changes, then Run design. If not, keep talking and rewrite again.');
-    }catch(e){ t.remove(); iShowErr(e.message); }
-    iRewrite.disabled = false;
-  }
-
-  iSend.addEventListener('click', iChat);
-  iRewrite.addEventListener('click', iDoRewrite);
-  iInput.addEventListener('keydown', e => { if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); iChat(); } });
-  iInput.addEventListener('input', e => { e.target.style.height='auto'; e.target.style.height = Math.min(e.target.scrollHeight,140) + 'px'; });
-
-  iOpen();   // open with this idea's scope questions, not a canned greeting
-}
-
-function showErr(m){ const e=$('err'); e.style.display='block'; e.textContent=m; }
-function clearErr(){ $('err').style.display='none'; }
-
-// pending screenshots for the design chat, wired after the DOM exists (bottom of file)
-let pendingImages = [];
-let renderAttach = null;
-
-async function send(){
-  const text = $('input').value.trim();
-  if((!text && pendingImages.length === 0) || !idea) return;
-
-  // If the message is an explicit rewrite command, route to the rewrite path
-  // (same deliberate action as the button) rather than a normal chat turn.
-  // Conservative on purpose: only clear imperatives fire it, so musing about
-  // rewriting won't regenerate the spec.
-  if(isRewriteCommand(text)){
-    $('input').value=''; $('input').style.height='auto';
-    addMsg('user', text);
-    await rewrite();
-    return;
-  }
-
-  clearErr();
-  const images = pendingImages.slice();
-  pendingImages.length = 0;
-  if(renderAttach) renderAttach();
-  $('input').value=''; $('input').style.height='auto';
-  const shown = text || '(screenshot)';
-  addMsg('user', shown, null, images);
-  // History keeps a text marker for the image (small payloads on later turns);
-  // the actual pixels ride THIS request only, attached to the final user message.
-  messages.push({role:'user', content: shown + (images.length ? '\n[' + images.length + ' screenshot(s) attached]' : '')});
-  $('send').disabled = true;
-  const typing = addMsg('assistant','thinking…','typing');
-  try{
-    const r = await fetch('/api/design-chat',{method:'POST',headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({mode:'chat', idea, messages, images})});
-    const j = await r.json();
-    typing.remove();
-    if(!j.ok) throw new Error(j.error||'chat failed');
-    addMsg('assistant', j.text);
-    messages.push({role:'assistant', content:j.text});
-  }catch(e){ typing.remove(); showErr(e.message); }
-  $('send').disabled = false;
-  $('input').focus();
-}
-
-function isRewriteCommand(text){
-  const t = text.toLowerCase().trim().replace(/[.!]+$/,'');
-  const patterns = [
-    /^rewrite( the)?( spec| build sequence| it)?( now)?$/,
-    /^(go ahead and |please |okay,? )?rewrite (the )?(spec|build sequence|it)\b/,
-    /^update (the )?build sequence\b/,
-    /^(re)?generate (the )?(spec|build sequence)\b/,
-    /^apply (the |our )?(decisions|changes) (to )?(the )?(spec|build sequence)\b/,
-  ];
-  return patterns.some(p => p.test(t));
-}
-
-async function rewrite(){
-  if(!idea || messages.length===0){ showErr('Talk through the questions first — nothing to rewrite from.'); return; }
-  clearErr();
-  $('rewrite').disabled = true;
-  const note = addMsg('assistant','rewriting the build sequence…','typing');
-  try{
-    const r = await fetch('/api/design-chat',{method:'POST',headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({mode:'rewrite', idea, messages})});
-    const j = await r.json();
-    note.remove();
-    if(!j.ok) throw new Error(j.error||'rewrite failed');
-    pendingSeq = j.text;
-    $('seq').textContent = j.text;
-    $('seq').classList.add('changed');
-    $('specNote').textContent = '⚠ proposed — NOT saved yet';
-    $('save').disabled = false;
-    $('save').classList.add('needs-save');
-    addMsg('assistant','I drafted the rewrite on the left (highlighted) — but it is NOT saved yet; it\u2019s a proposal. Read it over, then hit \u201CSave resolved spec\u201D to commit it. If it\u2019s not right, keep talking and rewrite again. (Nothing changes in the queue until you Save.)','sys');
-  }catch(e){ note.remove(); showErr(e.message); }
-  $('rewrite').disabled = false;
-}
-
-async function save(){
-  if(pendingSeq===null){ showErr('Nothing to save yet — rewrite the spec first.'); return; }
-  clearErr(); $('save').disabled = true;
-  try{
-    const r = await fetch('/api/idea',{method:'POST',headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({id: idea.ideaId, buildSequence: pendingSeq})});
-    const j = await r.json();
-    if(!j.ok) throw new Error(j.error||'save failed');
-    idea.buildSequence = pendingSeq; pendingSeq = null;
-    $('seq').classList.remove('changed');
-    $('save').classList.remove('needs-save');
-    $('specNote').textContent = 'saved ✓';
-    addMsg('assistant','Saved to the queue. The build sequence is updated. When the spec is right, make your call below — “Approve → build” sends it to the build queue (the watcher fires it on its next run, or hit Submit on the board to fire now).','sys');
-  }catch(e){ showErr(e.message); $('save').disabled=false; }
-}
-
-$('send').onclick = send;
-$('rewrite').onclick = rewrite;
-$('save').onclick = save;
-
-// ── Verdict grammar ─────────────────────────────────────────────────────────
-// Verdicts render in the HEADER, next to the idea's ID and title (you can't act
-// without the idea in your eyeline). Stage-aware; rightmost = forward (blue);
-// corrective/backward = ghost. Every consequential verdict confirms through a
-// dialog that echoes the idea (T2); Revise verdicts collect their feedback IN
-// the dialog — no findings box parked on the page. Hold is T1 (instant).
-function renderHeaderActions(stage){
-  const s = (stage||'').trim();
-  const bar = $('hActions');
-  bar.innerHTML = '';
-  const btn = (label, cls, onclick) => {
-    const b = document.createElement('button');
-    b.className = 'hbtn' + (cls ? ' ' + cls : '');
-    b.textContent = label;
-    b.onclick = onclick;
-    bar.appendChild(b);
-    return b;
-  };
-  const design  = (s === 'Designing' || s === 'In Review');                 // tolerate legacy
-  const testing = (s === 'Testing' || s === 'Preview Deployed');            // has a landed preview to verify
-  // NOTE: 'Building' is deliberately NOT here — a card mid-build has no preview yet,
-  // so offering Advance/Revise would let you promote something that isn't built. It
-  // falls through to the status note below.
-
-  // Within Designing, the right forward action depends on whether the spec exists yet.
-  // A card can sit at Designing with no brief/sequence (design agent not yet run) — then
-  // it needs "Run design", exactly like the board offers, NOT "Approve" (approving an
-  // empty spec builds nothing). Once a build sequence exists, Approve is correct. This is
-  // what kept board and resolve disagreeing on a Designing card.
-  const hasSpec = !!((idea.buildSequence||'').trim() || (idea.designBrief||'').trim());
-
-  if (design) {
-    // corrective left → forward rightmost
-    btn('Hold', '', () => decide('Hold', ''));                              // T1: instant
-    btn('Decline', '', () => openVerdictDialog({
-      heading: 'Decline this idea?',
-      body: 'Moves it to Declined (terminal).',
-      confirmLabel: 'Decline', confirmClass: 'danger', verdict: 'Decline',
-    }));
-    btn('Send back to Research ↺', '', () => openVerdictDialog({
-      heading: 'Send back to Research?',
-      body: 'Routes the idea back to Enriching for another research pass. Feedback is required so the redo has direction.',
-      requireText: true, placeholder: 'What should the redo get right?',
-      confirmLabel: 'Send back', confirmClass: 'neutral', verdict: 'Revise Research',
-    }));
-    if (hasSpec) {
-      btn('Approve → build', 'fwd', () => openVerdictDialog({
-        heading: 'Approve for build?',
-        body: 'Queues the build — the watcher fires it on its next run (or Build now / Submit on the board). The autonomous build spends API credits and commits to staging.',
-        confirmLabel: 'Approve → build', verdict: 'Approve',
-      }));
-    } else {
-      // No spec yet — run the design agent (same job the board's "Design" button fires).
-      btn('Run design →', 'fwd', () => openVerdictDialog({
-        heading: 'Run design?',
-        body: 'Runs the design agent to generate the design brief and build sequence from the idea. This spends API credits. Once it completes, this screen shows the spec and the Approve action.',
-        confirmLabel: 'Run design →', runDesign: true,
-      }));
-    }
-  } else if (testing) {
-    btn('Revise build ↺', '', () => openVerdictDialog({
-      heading: 'Revise build?',
-      body: 'Sends testing findings back for a rebuild. The rebuild applies ONLY these adjustments to the work already committed on staging — be precise and additive. The spec is not regenerated.',
-      requireText: true, placeholder: 'Testing findings — what must the rebuild adjust?',
-      confirmLabel: 'Revise build ↺', confirmClass: 'neutral', verdict: 'Revise Build',
-    }));
-    btn('Advance to Ready to Promote →', 'fwd', () => openVerdictDialog({
-      heading: 'Advance to Ready to Promote?',
-      body: 'Confirms you\u2019ve verified the staging preview. Moves the idea to the promotion queue \u2014 it does NOT deploy to production (Promote is the separate step, on the board).',
-      confirmLabel: 'Advance →', verdict: 'Advance',
-    }));
-  } else {
-    const note = {
-      'Building': 'Build running — the agent is working. Verdicts appear once a staging preview lands (Testing).',
-      'Approved': 'Approved — the watcher fires the build on its next run (or Build now on the board).',
-      'Ready to Promote': 'Ready to Promote — promote to production from the board.',
-      'Live': 'Live in production.',
-      'Declined': 'Declined.',
-      'Blocked': 'Blocked — see the board for the reason.'
-    }[s] || 'No resolve action at this stage.';
-    const span = document.createElement('span');
-    span.className = 'hstatus';
-    span.textContent = note;
-    bar.appendChild(span);
-  }
-}
-
-// One dialog for every verdict: echoes the idea ID + title (the wrong-idea guard),
-// optionally collects required feedback, posts /api/decide, reports errors inline.
-let _vOverlay = null;
-function closeVerdictDialog(){ if(_vOverlay){ _vOverlay.remove(); _vOverlay = null; } }
-function openVerdictDialog(opts){
-  closeVerdictDialog();
-  const ov = document.createElement('div'); ov.className = 'voverlay';
-  const d = document.createElement('div'); d.className = 'vdialog';
-
-  const id = document.createElement('div'); id.className = 'd-id'; id.textContent = idea.ideaId;
-  const h = document.createElement('h3'); h.textContent = opts.heading;
-  const t = document.createElement('p'); t.className = 'd-title'; t.textContent = idea.title || '';
-  const b = document.createElement('p'); b.className = 'd-body'; b.textContent = opts.body || '';
-  d.appendChild(id); d.appendChild(h); d.appendChild(t); d.appendChild(b);
-
-  let ta = null;
-  if (opts.requireText) {
-    ta = document.createElement('textarea');
-    ta.placeholder = opts.placeholder || '';
-    d.appendChild(ta);
-  }
-  const err = document.createElement('p'); err.className = 'd-err'; d.appendChild(err);
-
-  const actions = document.createElement('div'); actions.className = 'd-actions';
-  const cancel = document.createElement('button'); cancel.textContent = 'Cancel';
-  cancel.onclick = closeVerdictDialog;
-  const go = document.createElement('button');
-  go.className = 'd-go' + (opts.confirmClass ? ' ' + opts.confirmClass : '');
-  go.textContent = opts.confirmLabel;
-  go.onclick = async () => {
-    const feedback = ta ? ta.value.trim() : '';
-    if (opts.requireText && !feedback) { err.textContent = 'Feedback is required so the redo has direction.'; ta.focus(); return; }
-    go.disabled = true; cancel.disabled = true; err.textContent = '';
-
-    // Run design is a different action from a verdict: it fires the design agent
-    // (same job the board's Design button runs) rather than posting to /api/decide.
-    if (opts.runDesign) {
-      go.textContent = 'Running design…';
-      try {
-        const r = await fetch('/api/design-brief', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ id: idea.ideaId })
-        });
-        const j = await r.json();
-        if (!j.ok) throw new Error(j.error || 'design-brief failed');
-        go.textContent = 'Done ✓';
-        setTimeout(() => location.reload(), 700);   // reload → card now has a spec, renders Approve
-      } catch (e) {
-        err.textContent = e.message; go.disabled = false; cancel.disabled = false; go.textContent = opts.confirmLabel;
+      case "Decline":
+      case "Declined": {
+        await write({ Stage: "Declined", Review: "Pending",
+          "Review Log": appendLog(log, `Declined.${feedback ? " Reason: " + feedback : ""}`) });
+        return res.status(200).json({ ok: true, id, stage: "Declined" });
       }
-      return;
+      case "Revise Research": {
+        if (!feedback) return res.status(400).json({ ok: false, error: "Revise needs feedback so the redo has direction" });
+        const next = revisions + 1;
+        if (next >= MAX_REVISIONS) {
+          await write({ Stage: "Blocked", Review: "Pending", Revisions: String(next),
+            "Blocked Reason": `Hit ${MAX_REVISIONS} revisions — needs a real conversation, not another autonomous pass`,
+            "Review Log": appendLog(log, `Revise Research (rev ${next}) — LOOP GUARD -> Blocked. Feedback: ${feedback}`) });
+          return res.status(200).json({ ok: true, id, stage: "Blocked" });
+        }
+        await write({ Stage: "Enriching", Review: "Pending", Revisions: String(next), "Review Feedback": feedback,
+          "Review Log": appendLog(log, `Revise Research (rev ${next}) -> Enriching. Feedback: ${feedback}`) });
+        return res.status(200).json({ ok: true, id, stage: "Enriching" });
+      }
+      case "Revise Build": {
+        // Testing found implementation drift: the spec is right, the committed build needs
+        // adjustment. Route back through the NORMAL build path (Stage -> Approved; the
+        // watcher's claim-before-fire dispatch and the build workflow run unchanged).
+        if (!feedback) return res.status(400).json({ ok: false, error: "Revise Build needs the testing findings so the rebuild has direction" });
+        const stageNow = row.get("Stage").trim();
+        if (["Testing", "Building", "Preview Deployed"].indexOf(stageNow) < 0) {
+          return res.status(400).json({ ok: false, error: `Revise Build is only valid from a build-done stage (idea is at "${stageNow}")` });
+        }
+        const next = revisions + 1;
+        if (next >= MAX_REVISIONS) {
+          await write({ Stage: "Blocked", Review: "Pending", Revisions: String(next),
+            "Blocked Reason": `Hit ${MAX_REVISIONS} revisions — needs a real conversation, not another autonomous pass`,
+            "Review Log": appendLog(log, `Revise Build (rev ${next}) — LOOP GUARD -> Blocked. Findings: ${feedback}`) });
+          return res.status(200).json({ ok: true, id, stage: "Blocked" });
+        }
+
+        // Strip any previous revision preamble so revisions replace, never stack.
+        let seq = String(row.get("Build Sequence") || "");
+        if (seq.startsWith(REV_START)) {
+          const endIdx = seq.indexOf(REV_END);
+          if (endIdx >= 0) seq = seq.slice(endIdx + REV_END.length).replace(/^\s+/, "");
+        }
+
+        const preamble = [
+          `${REV_START} (rev ${next}) — ${stamp()} ###`,
+          ``,
+          `The prior build for this idea is ALREADY COMMITTED on the staging branch.`,
+          `The base feature exists and was verified working on the staging preview.`,
+          `Do NOT re-implement it, and do NOT conclude "already implemented" and stop:`,
+          `your task is to apply ONLY the adjustments below to the existing`,
+          `implementation. Change nothing else. All original scope locks still apply.`,
+          ``,
+          `Adjustments requested from preview testing:`,
+          feedback,
+          ``,
+          REV_END,
+        ].join("\n");
+
+        await write({ Stage: "Approved", Review: "Pending", Revisions: String(next),
+          "Review Feedback": feedback,
+          "Build Sequence": `${preamble}\n\n${seq}`,
+          "Review Log": appendLog(log, `Revise Build (rev ${next}) -> Approved for rebuild (watcher fires on next run / Submit). Findings: ${feedback}`) });
+        return res.status(200).json({ ok: true, id, stage: "Approved" });
+      }
+      case "Advance": {
+        // Human hold-release: the person verified the staging preview and advances the
+        // build to the promotion queue. Only valid from Testing (or an equivalent build-done
+        // stage) — the build must have produced a preview to advance.
+        const stageNow = row.get("Stage").trim();
+        if (["Testing", "Building", "Preview Deployed"].indexOf(stageNow) < 0) {
+          return res.status(400).json({ ok: false, error: `Advance is only valid from a build-done stage (idea is at "${stageNow}")` });
+        }
+        await write({ Stage: "Ready to Promote",
+          "Review Log": appendLog(log, `Preview verified — advanced to Ready to Promote.${feedback ? " Note: " + feedback : ""}`) });
+        return res.status(200).json({ ok: true, id, stage: "Ready to Promote" });
+      }
+      case "Unblock": {
+        // Recovery for a Blocked card sent back to re-scope. A Blocked card is often ALREADY
+        // at MAX_REVISIONS (the loop guard is why it's blocked), so routing it through
+        // "Revise Research" would immediately re-trip the guard and re-block it. Unblock is
+        // the clean primitive: Stage -> Enriching, revisions RESET to 0 (a fresh budget for
+        // the rework), Blocked Reason cleared. Feedback required so the rework has direction.
+        if (!feedback) return res.status(400).json({ ok: false, error: "Unblock needs a note so the rework has direction" });
+        await write({ Stage: "Enriching", Review: "Pending", Revisions: "0", "Blocked Reason": "",
+          "Review Feedback": feedback,
+          "Review Log": appendLog(log, `Unblocked -> Enriching for rework (revisions reset). Note: ${feedback}`) });
+        return res.status(200).json({ ok: true, id, stage: "Enriching" });
+      }
+      case "Hold": {
+        await write({ "Review Log": appendLog(log, `Hold.${feedback ? " Note: " + feedback : ""}`) });
+        return res.status(200).json({ ok: true, id, stage: row.get("Stage") });
+      }
+      default:
+        return res.status(400).json({ ok: false, error: `unknown verdict "${verdict}"` });
     }
-
-    const res = await postVerdict(opts.verdict, feedback);
-    if (!res.ok) { err.textContent = res.error; go.disabled = false; cancel.disabled = false; return; }
-    go.textContent = 'Done ✓';
-    setTimeout(() => { location.href = homeHref; }, 700);
-  };
-  actions.appendChild(cancel); actions.appendChild(go);
-  d.appendChild(actions);
-
-  ov.appendChild(d);
-  ov.onclick = (e) => { if (e.target === ov) closeVerdictDialog(); };
-  document.body.appendChild(ov);
-  _vOverlay = ov;
-  if (ta) ta.focus();
+  } catch (err: any) {
+    console.error("[decide] failed:", err);
+    return res.status(500).json({ ok: false, error: String(err?.message || err) });
+  }
 }
-
-async function postVerdict(verdict, feedback){
-  try{
-    const r = await fetch('/api/decide?key=' + encodeURIComponent(KEY), {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: idea.ideaId, verdict, feedback })
-    });
-    const j = await r.json();
-    if (!j.ok) return { ok: false, error: j.error || 'decide failed' };
-    return { ok: true, stage: j.stage };
-  }catch(e){ return { ok: false, error: e.message }; }
-}
-
-// T1 verdicts (Hold) fire without a dialog; errors surface as a transient header note.
-async function decide(verdict, feedback){
-  const res = await postVerdict(verdict, feedback || '');
-  const bar = $('hActions');
-  const note = document.createElement('span');
-  note.className = 'hstatus';
-  note.textContent = res.ok ? 'Held ✓' : res.error;
-  bar.appendChild(note);
-  setTimeout(() => note.remove(), 2400);
-}
-
-// Exit to the board. If we arrived from a same-origin page (the board), go back so
-// its filters and scroll survive. Otherwise let the href load the board fresh.
-$('back').addEventListener('click', e=>{
-  let cameFromBoard = false;
-  try{ cameFromBoard = document.referrer && new URL(document.referrer).origin === location.origin; }catch{}
-  if(cameFromBoard && history.length > 1){ e.preventDefault(); history.back(); }
-});
-$('input').addEventListener('keydown', e=>{ if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); send(); }});
-$('input').addEventListener('input', e=>{ e.target.style.height='auto'; e.target.style.height=Math.min(e.target.scrollHeight,140)+'px'; });
-renderAttach = wireImagePaste($('input'), $('attachStrip'), pendingImages, showErr);
-load();
-</script>
-</body>
-</html>
