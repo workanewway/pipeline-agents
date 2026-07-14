@@ -93,12 +93,17 @@ const READ_FILE_TOOL = {
     "idea is one coherent change or several things in the code. Do NOT use it to make design or " +
     "implementation decisions (which selector, how to wire it, whether to persist state) — those " +
     "belong to design. Paths are repo-relative — NOTE: pages live under public/ (e.g. \"public/workspace.html\") and vetting endpoints under the bracket folder (e.g. \"api/vettings/[id]/assess.ts\"). " +
-    "IMPORTANT: reads are truncated at 12,000 characters — for LARGE files (workspace.html is ~220k) " +
-    "use search_file to find the relevant lines instead of reading blind. Only files listed in the " +
-    "repo manifest exist; never guess at filenames.",
+    "IMPORTANT for LARGE files (workspace.html is ~220k): a plain read is truncated at 12,000 " +
+    "characters from the TOP, so a detail deep in the file is unreachable that way. Workflow: " +
+    "search_file FIRST to find the line numbers, THEN read_file with startLine/endLine to read " +
+    "exactly that region. Only files listed in the repo manifest exist; never guess at filenames.",
   input_schema: {
     type: "object",
-    properties: { path: { type: "string", description: "repo-relative file path" } },
+    properties: {
+      path: { type: "string", description: "repo-relative file path" },
+      startLine: { type: "number", description: "optional 1-based first line to read (use after search_file points at a region — reads the targeted region instead of the truncated top of the file)" },
+      endLine: { type: "number", description: "optional 1-based last line to read (defaults to ~120 lines past startLine)" },
+    },
     required: ["path"],
   },
 };
@@ -182,8 +187,10 @@ async function callClaudeWithFiles(
       let out = "(unsupported tool)";
       if (tu.name === "read_file") {
         const path = String(tu.input?.path || "");
-        reads.push(path);
-        out = readable ? await getFile(repo!, branch, path) : "(no readable repo for this idea)";
+        const startLine = Number(tu.input?.startLine) || undefined;
+        const endLine = Number(tu.input?.endLine) || undefined;
+        reads.push(startLine ? `${path} (lines ${startLine}-${endLine || "…"})` : path);
+        out = readable ? await getFile(repo!, branch, path, { startLine, endLine }) : "(no readable repo for this idea)";
       } else if (tu.name === "search_file") {
         const path = String(tu.input?.path || "");
         const pattern = String(tu.input?.pattern || "");
