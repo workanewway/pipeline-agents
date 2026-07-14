@@ -499,7 +499,10 @@
       var bb = el("button", "buildnow no-nav", "Build now \u2192");
       bb.addEventListener("click", function (e) { e.stopPropagation(); openBuildNowConfirm(idea); });
       foot.appendChild(bb);
-    } else if (["Testing", "Building", "Preview Deployed"].indexOf(st) >= 0) {
+    } else if (["Testing", "Preview Deployed"].indexOf(st) >= 0) {
+      // NOTE: "Building" is deliberately excluded — a card mid-build has no preview
+      // yet, so offering advance would let you queue something that isn't built.
+      // This matches resolve.html's renderHeaderActions (which also excludes Building).
       var ab = el("button", "advance no-nav", "Ready to promote \u2192");
       ab.addEventListener("click", function (e) { e.stopPropagation(); openAdvanceConfirm(idea); });
       foot.appendChild(ab);
@@ -507,6 +510,19 @@
       var pb = el("button", "promote no-nav", "Promote \u2192");
       pb.addEventListener("click", function (e) { e.stopPropagation(); openPromoteConfirm(idea); });
       foot.appendChild(pb);
+    } else if (st === "Blocked") {
+      // Recovery for stranded cards. A Blocked card used to render NO action at all,
+      // so it could only be freed by editing the sheet by hand. Two escapes, matching
+      // the two ways a card lands here: a build that failed on a transient/credit error
+      // wants Retry (→ Approved, fires again); a card blocked by the revision loop-guard
+      // ("needs a real conversation") wants Rework (→ Enriching, re-scope). Both reuse
+      // existing /api/decide verdicts (Approve / Revise Research).
+      var rw = el("button", "decide no-nav", "Rework \u21BA");
+      rw.addEventListener("click", function (e) { e.stopPropagation(); openBlockedRecovery(idea, "rework"); });
+      foot.appendChild(rw);
+      var rt = el("button", "buildnow no-nav", "Retry build \u2192");
+      rt.addEventListener("click", function (e) { e.stopPropagation(); openBlockedRecovery(idea, "retry"); });
+      foot.appendChild(rt);
     }
     card.appendChild(foot);
 
@@ -679,6 +695,54 @@
         showToast(idea.id + " \u2192 Ready to Promote");
       })
       .catch(function (e) { go.disabled = false; go.textContent = "Try again"; errLine.textContent = e.message; });
+  }
+
+  // Blocked-card recovery. `mode` = "retry" (→ Approved, re-queues the build) or
+  // "rework" (→ Enriching, re-scope). Rework requires a note (why/what to fix) since
+  // it reuses the Revise Research verdict, which requires feedback. Confirms echoing
+  // the idea (the wrong-idea guard), then posts /api/decide.
+  function openBlockedRecovery(idea, mode) {
+    var m = shell(idea);
+    var isRetry = mode === "retry";
+    m.appendChild(el("h3", null, (isRetry ? "Retry build for " : "Send " ) + idea.id + (isRetry ? "?" : " back to rework?")));
+    m.appendChild(el("p", "m-sub", idea.title || ""));
+    if (idea.blockedReason) m.appendChild(warn("amber", "Currently blocked: " + String(idea.blockedReason).replace(/</g, "&lt;")));
+    m.appendChild(warn(isRetry ? "blue" : "",
+      isRetry
+        ? "Moves " + idea.id + " back to Approved and re-queues it for build (the watcher fires it on its next run, or Build now). Use this after fixing a transient failure \u2014 e.g. restored API credits."
+        : "Moves " + idea.id + " back to Enriching for re-scoping. Use this when the card needs a real conversation, not another autonomous pass. A note is required so the rework has direction."));
+
+    var ta = null;
+    if (!isRetry) {
+      ta = document.createElement("textarea");
+      ta.className = "m-note";
+      ta.placeholder = "What should the rework get right?";
+      ta.style.cssText = "width:100%;box-sizing:border-box;min-height:70px;background:var(--panel-2,#21252e);color:inherit;border:1px solid var(--line,#2b303b);border-radius:8px;padding:9px;font:inherit;font-size:13px;margin-bottom:10px;";
+      m.appendChild(ta);
+    }
+
+    var errLine = el("p", "m-err", ""); m.appendChild(errLine);
+    var actions = el("div", "m-actions");
+    var cancel = el("button", "btn", "Cancel"); cancel.addEventListener("click", closeModal); actions.appendChild(cancel);
+    var go = el("button", "btn primary" + (isRetry ? "" : ""), isRetry ? "Retry build \u2192" : "Send to rework \u21BA");
+    go.addEventListener("click", function () {
+      var feedback = ta ? ta.value.trim() : "";
+      if (!isRetry && !feedback) { errLine.textContent = "A note is required so the rework has direction."; ta.focus(); return; }
+      go.disabled = true; go.textContent = isRetry ? "Retrying\u2026" : "Sending\u2026"; errLine.textContent = "";
+      fetch(api("/api/decide"), {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: idea.id, verdict: isRetry ? "Approve" : "Unblock", feedback: feedback })
+      })
+        .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+        .then(function (res) {
+          if (!res.ok || !res.j || res.j.ok === false) throw new Error((res.j && res.j.error) || "Recovery failed");
+          closeModal(); load();
+          showToast(idea.id + (isRetry ? " \u2192 Approved (re-queued)" : " \u2192 Enriching (rework)"));
+        })
+        .catch(function (e) { go.disabled = false; go.textContent = isRetry ? "Try again" : "Try again"; errLine.textContent = e.message; });
+    });
+    actions.appendChild(go);
+    m.appendChild(actions);
   }
 
   // Per-card targeted fire: builds THIS approved idea now, leaving the rest of the
