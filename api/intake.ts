@@ -31,6 +31,13 @@ interface Draft {
 }
 
 const clampStr = (v: any, max = 20000): string => (typeof v === "string" ? v.slice(0, max) : "");
+// F2 guard: a Source cell must never start with = + - @ (Sheets would parse it as
+// a formula -> #ERROR! -> every API read of that row breaks). Broker-supplied
+// attribution passes through here.
+const sanitizeSource = (v: any): string => {
+  const s = clampStr(v, 120).trim().replace(/^[=+\-@]+/, "").trim();
+  return s || "Intake";
+};
 const clampPriority = (v: any): number =>
   Math.max(PRIORITY_FLOOR, Math.min(100, Math.round(Number(v) || PRIORITY_FLOOR)));
 
@@ -121,13 +128,13 @@ async function nextRowAndId(): Promise<{ rowNum: number; ideaId: string }> {
 
 // FIX: returns RowDraft (named-fields) not string[].
 // updateCells resolves each column's position from the live sheet header — drift-proof.
-function buildRow(d: Draft, ideaId: string, now: string): RowDraft {
+function buildRow(d: Draft, ideaId: string, now: string, source: string): RowDraft {
   const project = projectByName(d.product);
   const row = newRow();
   setCell(row, "Idea ID", ideaId);
   setCell(row, "Title", d.title);
   setCell(row, "Stage", "Captured");
-  setCell(row, "Source", "Intake");
+  setCell(row, "Source", source);
   setCell(row, "Product", d.product);
   setCell(row, "Priority Score", String(d.priorityScore));
   setCell(row, "Priority Rationale", d.priorityRationale);
@@ -146,9 +153,13 @@ function buildRow(d: Draft, ideaId: string, now: string): RowDraft {
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  const gate = process.env.BOARD_KEY;
-  if (!gate)                      { res.status(403).json({ ok: false, error: "Intake is locked. Set BOARD_KEY in Vercel to enable it." }); return; }
-  if (req.query.key !== gate)     { res.status(401).json({ ok: false, error: "Unauthorized." }); return; }
+  // BOARD_KEY: the board UI's key. INTAKE_KEY (optional): a narrow-scope key valid
+  // for THIS endpoint only — set it in Vercel to give an external system (e.g. the
+  // vetting platform's broker feedback tile) intake access without handing it the
+  // board key. Fail-closed: locked unless at least one key is configured.
+  const validKeys = [process.env.BOARD_KEY, process.env.INTAKE_KEY].filter(Boolean);
+  if (validKeys.length === 0)                       { res.status(403).json({ ok: false, error: "Intake is locked. Set BOARD_KEY in Vercel to enable it." }); return; }
+  if (!validKeys.includes(String(req.query.key)))   { res.status(401).json({ ok: false, error: "Unauthorized." }); return; }
   if (req.method !== "POST")      { res.status(405).json({ ok: false, error: "Use POST." }); return; }
 
   const body = (req.body && typeof req.body === "object") ? req.body : {};
@@ -159,9 +170,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     if (isConfirm) {
       const draft = normalizeDraft(body.draft);
+      const source = sanitizeSource(body.source); // optional; defaults to "Intake" (board modal unchanged)
       const now = new Date().toISOString();
       const { rowNum, ideaId } = await nextRowAndId();
-      const row = buildRow(draft, ideaId, now);
+      const row = buildRow(draft, ideaId, now, source);
       // FIX: was sheets.spreadsheets.values.update with values:[row] where row is a
       // RowDraft object — Sheets API requires string[][] not Record<string,string>[].
       // updateCells resolves each column via the live header and writes correct ranges.
