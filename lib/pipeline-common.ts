@@ -467,7 +467,7 @@ const FILE_TTL_MS = 5 * 60 * 1000;
 const FILE_MAX_CHARS = 12000; // keep a single chat turn bounded
 const FILE_READABLE = /\.(html|ts|tsx|js|jsx|sql|json|md|css|ya?ml)$/;
 
-export async function getFile(repo: string, branch: string, path: string): Promise<string> {
+export async function getFile(repo: string, branch: string, path: string, opts?: { startLine?: number; endLine?: number }): Promise<string> {
   const slug = ghRepoSlug(repo);
   const clean = String(path || "").replace(/^\/+/, "").trim();
 
@@ -475,8 +475,9 @@ export async function getFile(repo: string, branch: string, path: string): Promi
   if (!FILE_READABLE.test(clean)) return `(refused: "${clean}" is not a readable source file — source/config only)`;
 
   const cacheKey = `${slug}@${branch}:${clean}`;
+  const wantsWindow = !!(opts && (opts.startLine || opts.endLine));
   const cached = _fileCache.get(cacheKey);
-  if (cached && Date.now() - cached.at < FILE_TTL_MS) return cached.text;
+  if (cached && !wantsWindow && Date.now() - cached.at < FILE_TTL_MS) return cached.text;
 
   const token = process.env.GITHUB_DISPATCH_TOKEN;
   if (!token) {
@@ -510,11 +511,38 @@ export async function getFile(repo: string, branch: string, path: string): Promi
       }
     }
     const total = content.length;
-    const body = total > FILE_MAX_CHARS
-      ? content.slice(0, FILE_MAX_CHARS) + `\n\n…(truncated — first ${FILE_MAX_CHARS} of ${total} chars)`
-      : content;
-    const text = `FILE ${servedPath} @ ${slug}#${branch} (${total} chars)\n\n${body}`;
-    _fileCache.set(cacheKey, { text, at: Date.now() });
+    const allLines = content.split("\n");
+    const totalLines = allLines.length;
+
+    // Windowed read: if the caller passed a line range (typically after search_file
+    // pointed at a region), return exactly that slice — NOT the blind first 12k. This is
+    // the core efficiency fix: a detail at line 3843 of a 220k file used to be
+    // unreachable via read_file (truncated from the top); now read_file(startLine:3838,
+    // endLine:3850) returns exactly it. Still char-capped as a backstop against a caller
+    // asking for a huge range.
+    const wantWindow = !!(opts && (opts.startLine || opts.endLine));
+    let body: string;
+    let windowNote = "";
+    if (wantWindow) {
+      const start = Math.max(1, Math.floor(opts!.startLine || 1));
+      const end = Math.min(totalLines, Math.floor(opts!.endLine || Math.min(totalLines, start + 120)));
+      const slice = allLines.slice(start - 1, end);
+      let windowed = slice.map((l, i) => `${start + i}: ${l}`).join("\n");
+      if (windowed.length > FILE_MAX_CHARS) {
+        windowed = windowed.slice(0, FILE_MAX_CHARS) + `\n\n…(window truncated at ${FILE_MAX_CHARS} chars — narrow the range)`;
+      }
+      body = windowed;
+      windowNote = ` lines ${start}-${end} of ${totalLines}`;
+    } else {
+      body = total > FILE_MAX_CHARS
+        ? content.slice(0, FILE_MAX_CHARS) + `\n\n…(truncated — first ${FILE_MAX_CHARS} of ${total} chars; ${totalLines} lines total. Use search_file to find the region you need, then read_file with startLine/endLine to read it directly.)`
+        : content;
+    }
+    const text = `FILE ${servedPath} @ ${slug}#${branch} (${total} chars, ${totalLines} lines)${windowNote}\n\n${body}`;
+    // Only cache full reads; windowed reads are query-specific and cheap to re-fetch
+    // (the underlying content is itself cached by the earlier fetchOne path implicitly
+    // via GitHub's edge, and windows vary per question).
+    if (!wantWindow) _fileCache.set(cacheKey, { text, at: Date.now() });
     return text;
   } catch (err: any) {
     // LOG the real failure — previously this failed soft with no log line, which made
@@ -560,14 +588,42 @@ export async function searchFile(repo: string, branch: string, path: string, pat
 
     const lines = content.split("\n");
     const MAX_MATCHES = 40;
-    const out: string[] = [];
-    for (let i = 0; i < lines.length && out.length < MAX_MATCHES; i++) {
+    const CONTEXT = 6; // lines of surrounding context per match (grep -C style)
+
+    // Collect matching line indices first, then emit merged windows around them WITH
+    // context. Returning only the bare matching line used to force a follow-up read_file
+    // (to see the surrounding code) that then truncated blind — the exact round-trip this
+    // is meant to kill. With context, a search usually answers in a single call.
+    const hits: number[] = [];
+    for (let i = 0; i < lines.length && hits.length < MAX_MATCHES; i++) {
       const l = lines[i];
       const hit = re ? re.test(l) : l.toLowerCase().includes(needle);
-      if (hit) out.push(`${i + 1}: ${l.trim().slice(0, 200)}`);
+      if (hit) hits.push(i);
     }
-    if (!out.length) return `SEARCH ${clean} @ ${slug}#${branch} for /${pat}/ — no matches (${lines.length} lines scanned)`;
-    return `SEARCH ${clean} @ ${slug}#${branch} for /${pat}/ — ${out.length} match(es)${out.length === MAX_MATCHES ? " (capped at 40)" : ""} of ${lines.length} lines\n${out.join("\n")}`;
+    if (!hits.length) return `SEARCH ${clean} @ ${slug}#${branch} for /${pat}/ — no matches (${lines.length} lines scanned)`;
+
+    // Merge hit windows [i-CONTEXT, i+CONTEXT] that overlap, so adjacent matches read as
+    // one contiguous block instead of repeating shared context.
+    const windows: Array<[number, number]> = [];
+    for (const h of hits) {
+      const lo = Math.max(0, h - CONTEXT);
+      const hi = Math.min(lines.length - 1, h + CONTEXT);
+      const last = windows[windows.length - 1];
+      if (last && lo <= last[1] + 1) last[1] = Math.max(last[1], hi);
+      else windows.push([lo, hi]);
+    }
+
+    const hitSet = new Set(hits);
+    const out: string[] = [];
+    for (const [lo, hi] of windows) {
+      if (out.length) out.push("  --");
+      for (let i = lo; i <= hi; i++) {
+        // `:` marks a matching line, `·` marks context — so the model sees WHY each line is here.
+        const mark = hitSet.has(i) ? ":" : "\u00B7";
+        out.push(`${i + 1}${mark} ${lines[i].slice(0, 200)}`);
+      }
+    }
+    return `SEARCH ${clean} @ ${slug}#${branch} for /${pat}/ — ${hits.length} match(es)${hits.length === MAX_MATCHES ? " (capped at 40)" : ""} of ${lines.length} lines, \u00B1${CONTEXT} lines context\n${out.join("\n")}`;
   } catch (err: any) {
     console.error(`[searchFile] FAILED ${slug}#${branch}:${clean} /${pat}/ — ${String(err?.message || err)}`);
     return `(search unavailable: ${clean} — ${String(err?.message || err)})`;
