@@ -208,10 +208,13 @@ async function chatWithFiles(
   const readable = !!repo && isGithubRepo(repo);
   const convo: any[] = messages.map((m) => ({ role: m.role, content: m.content }));
   const reads: string[] = [];
-  const MAX_TOOL_TURNS = 4;
+  const MAX_TOOL_TURNS = 6;
   // Time budget: past this, stop offering tools so the model MUST answer with what it
   // has — a degraded-but-delivered reply instead of a silent death on maxDuration.
-  const TIME_BUDGET_MS = 40_000;
+  // Raised 40s -> 80s (matches idea-chat): reduces false "ran out of budget" exits on
+  // legitimate multi-file design inspection; still well under the function ceiling so a
+  // runaway read fails soft, not silent. Efficiency (search-first) is the primary lever.
+  const TIME_BUDGET_MS = 80_000;
   const started = Date.now();
   let lastText = "";
 
