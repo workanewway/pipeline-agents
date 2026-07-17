@@ -644,17 +644,64 @@ export async function searchFile(repo: string, branch: string, path: string, pat
 // ---------------------------------------------------------------------------
 export const PROJECT_CONTEXT_FILE = "CONTEXT.md";
 
+// CONTEXT.md may be an INDEX that lists context modules in a fenced block:
+//     ```context-manifest
+//     context/ENTITIES.md   — one-line purpose
+//     context/DATA.md       — one-line purpose
+//     ```
+// Each listed module is fetched (via getFile — same token, cache, guards, 12k
+// cap, fail-soft) and concatenated after the index. The index carries the
+// non-negotiable invariants inline, so an agent stays safe even if a module
+// fetch fails. A missing/absent manifest = the index IS the whole context
+// (backward-compatible with a single-file CONTEXT.md). Paths resolve against
+// the SAME branch as the index (research→main, design→staging).
+const MANIFEST_MAX_MODULES = 12; // sanity bound; never fetch an unbounded list
+
+// Pull module paths out of the ```context-manifest``` fence. Each line's path is
+// the first whitespace-delimited token; the rest (after — or whitespace) is a
+// human descriptor we ignore. Returns [] when no manifest block is present.
+export function parseContextManifest(indexText: string): string[] {
+  const m = indexText.match(/```context-manifest\s*([\s\S]*?)```/);
+  if (!m) return [];
+  return m[1]
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l && !l.startsWith("#"))
+    .map((l) => l.split(/\s+|—|-{2,}/)[0].trim())
+    .filter((path) => /^[\w./-]+\.md$/.test(path) && !path.includes("..") && !path.startsWith("/"))
+    .slice(0, MANIFEST_MAX_MODULES);
+}
+
 export async function getProjectContext(p: Project, branch = "main"): Promise<string> {
   if (!isGithubRepo(p.repo)) return p.context; // no repo -> static context IS canonical
-  const file = await getFile(p.repo, branch, PROJECT_CONTEXT_FILE);
-  // Success: getFile returns "FILE <path> @ <slug>#<branch> …" — keep the provenance header,
-  // it tells the model (and anyone reading the prompt) exactly which version it's seeing.
-  if (file.startsWith("FILE ")) return file;
+
+  const index = await getFile(p.repo, branch, PROJECT_CONTEXT_FILE);
   // Failure: getFile returned a "(…)" note. LOG it loudly — a degraded context silently
   // weakens every scope and design conversation — then fall back to the stub and surface
   // the failure INSIDE the context so the degradation is legible, not silent.
-  console.error(`[getProjectContext] CONTEXT.md fetch FAILED for ${p.name} (${p.repo}#${branch}): ${file}`);
-  return `${p.context}\n\n(canonical ${PROJECT_CONTEXT_FILE} unavailable on ${p.repo}#${branch}: ${file})`;
+  if (!index.startsWith("FILE ")) {
+    console.error(`[getProjectContext] CONTEXT.md fetch FAILED for ${p.name} (${p.repo}#${branch}): ${index}`);
+    return `${p.context}\n\n(canonical ${PROJECT_CONTEXT_FILE} unavailable on ${p.repo}#${branch}: ${index})`;
+  }
+
+  const modules = parseContextManifest(index);
+  if (modules.length === 0) return index; // single-file CONTEXT.md — nothing to assemble
+
+  // Fetch each module through getFile (parallel; each independently fail-soft).
+  const parts = await Promise.all(
+    modules.map(async (path) => {
+      const mod = await getFile(p.repo, branch, path);
+      if (mod.startsWith("FILE ")) {
+        return `\n\n===== CONTEXT MODULE: ${path} =====\n\n${mod}`;
+      }
+      // A module fetch failed — surface it VISIBLY (never silently drop). The
+      // index's inline invariants remain the safety floor.
+      console.error(`[getProjectContext] module fetch FAILED for ${p.name} (${path}#${branch}): ${mod}`);
+      return `\n\n===== CONTEXT MODULE: ${path} — UNAVAILABLE =====\n(${mod})`;
+    })
+  );
+
+  return index + parts.join("");
 }
 
 // ---------------------------------------------------------------------------
